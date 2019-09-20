@@ -1,79 +1,62 @@
 ﻿using System;
-using System.IO;
+using System.Collections.Generic;
 using System.Linq;
+using static LiteDB.Constants;
 
-namespace LiteDB
+namespace LiteDB.Engine
 {
     public partial class LiteEngine
     {
         /// <summary>
-        /// Reduce disk size re-arranging unused spaces. Can change password. If temporary disk was not provided, use MemoryStream temp disk
         /// </summary>
-        public long Shrink(string password = null, IDiskService tempDisk = null)
+        public long Shrink()
         {
-            var originalSize = _disk.FileLength;
+            _walIndex.Checkpoint(false);
 
-            // if temp disk are not passed, use memory stream disk
-            using (var temp = tempDisk ?? new StreamDiskService(new MemoryStream()))
-            using (_locker.Write())
-            using (var engine = new LiteEngine(temp, password))
+            if (_disk.GetLength(FileOrigin.Log) > 0) throw new LiteException(0, "Shrink operation requires no log file - run Checkpoint before continue");
+
+            _locker.EnterReserved(true);
+
+            var originalLength = _disk.GetLength(FileOrigin.Data);
+
+            // create a savepoint in header page - restore if any error occurs
+            var savepoint = _header.Savepoint();
+
+            // must clear all cache pages because all of them will change
+            _disk.Cache.Clear();
+
+            try
             {
-                // read all collection
-                foreach (var collectionName in this.GetCollectionNames())
+                // initialize V8 file reader
+                using (var reader = new FileReaderV8(_header, _disk))
                 {
-                    // first create all user indexes (exclude _id index)
-                    foreach (var index in this.GetIndexes(collectionName).Where(x => x.Field != "_id"))
-                    {
-                        engine.EnsureIndex(collectionName, index.Field, index.Unique);
-                    }
+                    // clear current header
+                    _header.FreeEmptyPageID = uint.MaxValue;
+                    _header.LastPageID = 0;
+                    _header.GetCollections().ToList().ForEach(c => _header.DeleteCollection(c.Key));
 
-                    // now copy documents 
-                    var docs = this.Find(collectionName, Query.All());
+                    // rebuild entrie database using FileReader
+                    this.Rebuild(reader);
 
-                    engine.InsertBulk(collectionName, docs);
+                    // crop data file
+                    var newLength = BasePage.GetPagePosition(_header.LastPageID);
 
-                    // fix collection sequence number
-                    var seq = _collections.Get(collectionName).Sequence;
+                    _disk.SetLength(newLength, FileOrigin.Data);
 
-                    engine.Transaction(collectionName, true, (col) =>
-                    {
-                        col.Sequence = seq;
-                        engine._pager.SetDirty(col);
-                        return true;
-                    });
-
+                    return originalLength - newLength;
                 }
+            }
+            catch(Exception)
+            {
+                _header.Restore(savepoint);
 
-                // copy user version
-                engine.UserVersion = this.UserVersion;
+                throw;
+            }
+            finally
+            {
+                _locker.ExitReserved(true);
 
-                // set current disk size to exact new disk usage
-                _disk.SetLength(temp.FileLength);
-
-                // read new header page to start copy
-                var header = BasePage.ReadPage(temp.ReadPage(0)) as HeaderPage;
-
-                // copy (as is) all pages from temp disk to original disk
-                for (uint i = 0; i <= header.LastPageID; i++)
-                {
-                    // skip lock page
-                    if (i == 1) continue;
-
-                    var page = temp.ReadPage(i);
-
-                    _disk.WritePage(i, page);
-                }
-
-                // create/destroy crypto class
-                if (_crypto != null) _crypto.Dispose();
-
-                _crypto = password == null ? null : new AesEncryption(password, header.Salt);
-
-                // initialize all services again (crypto can be changed)
-                this.InitializeServices();
-                
-                // return how many bytes are reduced
-                return originalSize - temp.FileLength;
+                _walIndex.Checkpoint(false);
             }
         }
     }
