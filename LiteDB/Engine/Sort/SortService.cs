@@ -26,10 +26,9 @@ namespace LiteDB.Engine
         private readonly Done _done = new Done { Running = true };
 
         private readonly int _order;
-
+        private readonly EnginePragmas _pragmas;
         private readonly BufferSlice _buffer;
         private readonly Lazy<Stream> _reader;
-
 
         /// <summary>
         /// Get how many documents was inserted by Insert method
@@ -41,11 +40,11 @@ namespace LiteDB.Engine
         /// </summary>
         public IReadOnlyCollection<SortContainer> Containers => _containers;
 
-        public SortService(SortDisk disk, int order)
+        public SortService(SortDisk disk, int order, EnginePragmas pragmas)
         {
             _disk = disk;
             _order = order;
-
+            _pragmas = pragmas;
             _containerSize = disk.ContainerSize;
 
             _reader = new Lazy<Stream>(() => _disk.GetReader());
@@ -87,7 +86,7 @@ namespace LiteDB.Engine
             // slit all items in sorted containers
             foreach (var containerItems in this.SliptValues(items, _done))
             {
-                var container = new SortContainer(_containerSize);
+                var container = new SortContainer(_pragmas.Collation, _containerSize);
 
                 // insert segmented items inside a container - reuse same buffer slice
                 container.Insert(containerItems, _order, _buffer);
@@ -97,7 +96,7 @@ namespace LiteDB.Engine
                 // initialize container readers: if single container, do not use Stream file... only buffer memory
                 if (_done.Running == false && _containers.Count == 1)
                 {
-                    container.InitializeReader(null, _buffer, _disk.UtcDate);
+                    container.InitializeReader(null, _buffer, _pragmas.UtcDate);
                 }
                 else
                 {
@@ -106,7 +105,7 @@ namespace LiteDB.Engine
 
                     _disk.Write(container.Position, _buffer);
 
-                    container.InitializeReader(_reader.Value, null, _disk.UtcDate);
+                    container.InitializeReader(_reader.Value, null, _pragmas.UtcDate);
                 }
             }
         }
@@ -116,6 +115,8 @@ namespace LiteDB.Engine
         /// </summary>
         public IEnumerable<KeyValuePair<BsonValue, PageAddress>> Sort()
         {
+            if (_containers.Count == 0) yield break;
+
             // starts with first container as current
             var current = _containers[0];
 
@@ -139,7 +140,7 @@ namespace LiteDB.Engine
                 {
                     foreach (var container in _containers.Where(x => !x.IsEOF))
                     {
-                        var diff = container.Current.Key.CompareTo(current.Current.Key);
+                        var diff = container.Current.Key.CompareTo(current.Current.Key, _pragmas.Collation);
 
                         if (diff == diffOrder)
                         {
@@ -195,13 +196,13 @@ namespace LiteDB.Engine
         /// </summary>
         private IEnumerable<KeyValuePair<BsonValue, PageAddress>> YieldValues(IEnumerator<KeyValuePair<BsonValue, PageAddress>> source, Done done)
         {
-            var size = SortContainer.GetKeyLength(source.Current.Key) + PageAddress.SIZE;
+            var size = IndexNode.GetKeyLength(source.Current.Key, false) + PageAddress.SIZE;
 
             yield return source.Current;
 
             while (source.MoveNext())
             {
-                var length = SortContainer.GetKeyLength(source.Current.Key) + PageAddress.SIZE;
+                var length = IndexNode.GetKeyLength(source.Current.Key, false) + PageAddress.SIZE;
 
                 done.Count++;
 
@@ -215,5 +216,4 @@ namespace LiteDB.Engine
             done.Running = false;
         }
     }
-
 }

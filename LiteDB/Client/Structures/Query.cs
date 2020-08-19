@@ -34,7 +34,7 @@ namespace LiteDB
         /// </summary>
         public static Query All(int order = Ascending)
         {
-            return new Query { Order = order };
+            return new Query { OrderBy = "_id", Order = order };
         }
 
         /// <summary>
@@ -52,7 +52,7 @@ namespace LiteDB
         {
             if (field.IsNullOrWhiteSpace()) throw new ArgumentNullException(nameof(field));
 
-            return BsonExpression.Create($"{field} = @0", value);
+            return BsonExpression.Create($"{field} = {value ?? BsonValue.Null}");
         }
 
         /// <summary>
@@ -62,7 +62,7 @@ namespace LiteDB
         {
             if (field.IsNullOrWhiteSpace()) throw new ArgumentNullException(nameof(field));
 
-            return BsonExpression.Create($"{field} < @0", value);
+            return BsonExpression.Create($"{field} < {value ?? BsonValue.Null}");
         }
 
         /// <summary>
@@ -72,7 +72,7 @@ namespace LiteDB
         {
             if (field.IsNullOrWhiteSpace()) throw new ArgumentNullException(nameof(field));
 
-            return BsonExpression.Create($"{field} <= @0", value);
+            return BsonExpression.Create($"{field} <= {value ?? BsonValue.Null}");
         }
 
         /// <summary>
@@ -82,7 +82,7 @@ namespace LiteDB
         {
             if (field.IsNullOrWhiteSpace()) throw new ArgumentNullException(nameof(field));
 
-            return BsonExpression.Create($"{field} > @0", value);
+            return BsonExpression.Create($"{field} > {value ?? BsonValue.Null}");
 
         }
 
@@ -93,7 +93,7 @@ namespace LiteDB
         {
             if (field.IsNullOrWhiteSpace()) throw new ArgumentNullException(nameof(field));
 
-            return BsonExpression.Create($"{field} >= @0", value);
+            return BsonExpression.Create($"{field} >= {value ?? BsonValue.Null}");
         }
 
         /// <summary>
@@ -103,7 +103,7 @@ namespace LiteDB
         {
             if (field.IsNullOrWhiteSpace()) throw new ArgumentNullException(nameof(field));
 
-            return BsonExpression.Create($"{field} BETWEEN @0 AND @1", start, end);
+            return BsonExpression.Create($"{field} BETWEEN {start ?? BsonValue.Null} AND {end ?? BsonValue.Null}");
         }
 
         /// <summary>
@@ -114,18 +114,18 @@ namespace LiteDB
             if (field.IsNullOrWhiteSpace()) throw new ArgumentNullException(nameof(field));
             if (value.IsNullOrWhiteSpace()) throw new ArgumentNullException(nameof(value));
 
-            return BsonExpression.Create($"{field} LIKE @0", value + "%");
+            return BsonExpression.Create($"{field} LIKE {(new BsonValue(value + "%"))}");
         }
 
         /// <summary>
-        /// Returns all documents that contains value (CONTAINS)
+        /// Returns all documents that contains value (CONTAINS) - string Contains
         /// </summary>
         public static BsonExpression Contains(string field, string value)
         {
             if (field.IsNullOrWhiteSpace()) throw new ArgumentNullException(nameof(field));
             if (value.IsNullOrWhiteSpace()) throw new ArgumentNullException(nameof(value));
 
-            return BsonExpression.Create($"{field} LIKE @0", "%" + value + "%");
+            return BsonExpression.Create($"{field} LIKE {(new BsonValue("%" + value + "%"))}");
         }
 
         /// <summary>
@@ -135,7 +135,7 @@ namespace LiteDB
         {
             if (field.IsNullOrWhiteSpace()) throw new ArgumentNullException(nameof(field));
 
-            return BsonExpression.Create($"{field} != @0", value);
+            return BsonExpression.Create($"{field} != {value ?? BsonValue.Null}");
         }
 
         /// <summary>
@@ -146,7 +146,7 @@ namespace LiteDB
             if (field.IsNullOrWhiteSpace()) throw new ArgumentNullException(nameof(field));
             if (value == null) throw new ArgumentNullException(nameof(value));
 
-            return BsonExpression.Create($"{field} IN @0", value);
+            return BsonExpression.Create($"{field} IN {value}");
         }
 
         /// <summary>
@@ -166,6 +166,11 @@ namespace LiteDB
         }
 
         /// <summary>
+        /// Get all operands to works with array or enumerable values
+        /// </summary>
+        public static QueryAny Any() => new QueryAny();
+
+        /// <summary>
         /// Returns document that exists in BOTH queries results. If both queries has indexes, left query has index preference (other side will be run in full scan)
         /// </summary>
         public static BsonExpression And(BsonExpression left, BsonExpression right)
@@ -173,7 +178,7 @@ namespace LiteDB
             if (left == null) throw new ArgumentNullException(nameof(left));
             if (right == null) throw new ArgumentNullException(nameof(right));
 
-            return BsonExpressionParser.CreateBinaryExpression("AND", left, right);
+            return $"({left.Source} AND {right.Source})";
         }
 
         /// <summary>
@@ -201,7 +206,7 @@ namespace LiteDB
             if (left == null) throw new ArgumentNullException(nameof(left));
             if (right == null) throw new ArgumentNullException(nameof(right));
 
-            return BsonExpressionParser.CreateBinaryExpression("OR", left, right);
+            return $"({left.Source} OR {right.Source})";
         }
 
         /// <summary>

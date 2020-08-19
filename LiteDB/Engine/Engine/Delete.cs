@@ -20,9 +20,11 @@ namespace LiteDB.Engine
                 var snapshot = transaction.CreateSnapshot(LockMode.Write, collection, false);
                 var collectionPage = snapshot.CollectionPage;
                 var data = new DataService(snapshot);
-                var indexer = new IndexService(snapshot);
+                var indexer = new IndexService(snapshot, _header.Pragmas.Collation);
 
                 if (collectionPage == null) return 0;
+
+                LOG($"delete `{collection}`", "COMMAND");
 
                 var count = 0;
                 var pk = collectionPage.PK;
@@ -34,11 +36,11 @@ namespace LiteDB.Engine
                     // if pk not found, continue
                     if (pkNode == null) continue;
 
-                    // delete all nodes (start in pk node)
-                    indexer.DeleteAll(pkNode.Position);
-
                     // remove object data
                     data.Delete(pkNode.DataBlock);
+
+                    // delete all nodes (start in pk node)
+                    indexer.DeleteAll(pkNode.Position);
 
                     transaction.Safepoint();
 
@@ -55,43 +57,48 @@ namespace LiteDB.Engine
         public int DeleteMany(string collection, BsonExpression predicate)
         {
             if (collection.IsNullOrWhiteSpace()) throw new ArgumentNullException(nameof(collection));
-            if (predicate == null) throw new ArgumentNullException(nameof(predicate));
 
-            return this.AutoTransaction(transaction =>
+            // do optimization for when using "_id = value" key
+            if (predicate != null &&
+                predicate.Type == BsonExpressionType.Equal && 
+                predicate.Left.Type == BsonExpressionType.Path && 
+                predicate.Left.Source == "$._id" && 
+                predicate.Right.IsValue)
             {
-                // do optimization for when using "_id = value" key
-                if (predicate.Type == BsonExpressionType.Equal && 
-                    predicate.Left.Type == BsonExpressionType.Path && 
-                    predicate.Left.Source == "$._id" && 
-                    predicate.Right.IsValue)
-                {
-                    var id = predicate.Right.Execute().First();
+                var id = predicate.Right.Execute(_header.Pragmas.Collation).First();
 
-                    return this.Delete(collection, new BsonValue[] { id });
-                }
-                else
+                return this.Delete(collection, new BsonValue[] { id });
+            }
+            else
+            {
+                IEnumerable<BsonValue> getIds()
                 {
-                    IEnumerable<BsonValue> getIds()
+                    // this is intresting: if _id returns an document (like in FileStorage) you can't run direct _id
+                    // field because "reader.Current" will return _id document - but not - { _id: [document] }
+                    // create inner document to ensure _id will be a document
+                    var query = new Query { Select = "{ i: _id }", ForUpdate = true };
+
+                    if(predicate != null)
                     {
-                        // this is intresting: if _id returns an document (like in FileStorage) you can't run direct _id
-                        // field because "reader.Current" will return _id document - but not - { _id: [document] }
-                        // create inner document to ensure _id will be a document
-                        var query = new Query { Select = "{ i: _id }", ForUpdate = true };
-
                         query.Where.Add(predicate);
+                    }
 
-                        using (var reader = this.Query(collection, query))
+                    using (var reader = this.Query(collection, query))
+                    {
+                        while (reader.Read())
                         {
-                            while (reader.Read())
+                            var value = reader.Current["i"];
+
+                            if (value != BsonValue.Null)
                             {
-                                yield return reader.Current["i"];
+                                yield return value;
                             }
                         }
                     }
-
-                    return this.Delete(collection, getIds());
                 }
-            });
+
+                return this.Delete(collection, getIds());
+            }
         }
     }
 }

@@ -37,7 +37,7 @@ namespace LiteDB
             token.Expect("SELECT");
 
             // read required SELECT <expr> and convert into single expression
-            query.Select = BsonExpression.Create(_tokenizer, _parameters, BsonExpressionParserMode.SelectDocument);
+            query.Select = BsonExpression.Create(_tokenizer, BsonExpressionParserMode.SelectDocument, _parameters);
 
             // read FROM|INTO
             var from = _tokenizer.ReadToken();
@@ -45,7 +45,8 @@ namespace LiteDB
             if (from.Type == TokenType.EOF || from.Type == TokenType.SemiColon)
             {
                 // select with no FROM - just run expression (avoid DUAL table, Mr. Oracle)
-                var result = query.Select.Execute();
+                //TODO: i think will be better add all sql into engine
+                var result = query.Select.Execute(_collation.Value);
 
                 var defaultName = "expr";
 
@@ -86,7 +87,7 @@ namespace LiteDB
                 // read WHERE keyword
                 _tokenizer.ReadToken();
 
-                var where = BsonExpression.Create(_tokenizer, _parameters, BsonExpressionParserMode.Full);
+                var where = BsonExpression.Create(_tokenizer, BsonExpressionParserMode.Full, _parameters);
 
                 query.Where.Add(where);
             }
@@ -99,7 +100,7 @@ namespace LiteDB
                 _tokenizer.ReadToken();
                 _tokenizer.ReadToken().Expect("BY");
 
-                var groupBy = BsonExpression.Create(_tokenizer, _parameters, BsonExpressionParserMode.Full);
+                var groupBy = BsonExpression.Create(_tokenizer, BsonExpressionParserMode.Full, _parameters);
 
                 query.GroupBy = groupBy;
 
@@ -110,7 +111,7 @@ namespace LiteDB
                     // read HAVING keyword
                     _tokenizer.ReadToken();
 
-                    var having = BsonExpression.Create(_tokenizer, _parameters, BsonExpressionParserMode.Full);
+                    var having = BsonExpression.Create(_tokenizer, BsonExpressionParserMode.Full, _parameters);
 
                     query.Having = having;
                 }
@@ -124,7 +125,7 @@ namespace LiteDB
                 _tokenizer.ReadToken();
                 _tokenizer.ReadToken().Expect("BY");
 
-                var orderBy = BsonExpression.Create(_tokenizer, _parameters, BsonExpressionParserMode.Full);
+                var orderBy = BsonExpression.Create(_tokenizer, BsonExpressionParserMode.Full, _parameters);
 
                 var orderByOrder = Query.Ascending;
                 var orderByToken = _tokenizer.LookAhead();
@@ -201,7 +202,14 @@ namespace LiteDB
                 {
                     tokenizer.ReadToken(); // read (
 
-                    options = new JsonReader(tokenizer).Deserialize();
+                    if (tokenizer.LookAhead().Type == TokenType.CloseParenthesis)
+                    {
+                        options = null;
+                    }
+                    else
+                    {
+                        options = new JsonReader(tokenizer).Deserialize();
+                    }
 
                     tokenizer.ReadToken().Expect(TokenType.CloseParenthesis); // read )
                 }

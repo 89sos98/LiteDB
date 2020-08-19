@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using static LiteDB.Constants;
 
 namespace LiteDB.Engine
@@ -11,13 +12,18 @@ namespace LiteDB.Engine
     /// </summary>
     internal class IndexService
     {
-        private readonly Random _rand = new Random();
-        private readonly Snapshot _snapshot;
+        private static Random _rnd = new Random();
 
-        public IndexService(Snapshot snapshot)
+        private readonly Snapshot _snapshot;
+        private readonly Collation _collation;
+
+        public IndexService(Snapshot snapshot, Collation collation)
         {
             _snapshot = snapshot;
+            _collation = collation;
         }
+
+        public Collation Collation => _collation;
 
         /// <summary>
         /// Create a new index and returns head page address (skip list)
@@ -27,8 +33,8 @@ namespace LiteDB.Engine
             // get how many butes needed fore each head/tail (both has same size)
             var bytesLength = IndexNode.GetNodeLength(MAX_LEVEL_LENGTH, BsonValue.MinValue, out var keyLength);
 
-            // get a free index page for head note (x2 for head + tail)
-            var indexPage = _snapshot.GetFreePage<IndexPage>(bytesLength * 2);
+            // get a new empty page (each index contains your own linked nodes)
+            var indexPage = _snapshot.NewPage<IndexPage>();
 
             // create index ref
             var index = _snapshot.CollectionPage.InsertCollectionIndex(name, expr, unique);
@@ -40,6 +46,10 @@ namespace LiteDB.Engine
             // link head-to-tail with double link list in first level
             head.SetNext(0, tail.Position);
             tail.SetPrev(0, head.Position);
+
+            // add this new page in free list (slot 0)
+            index.FreeIndexPageList = indexPage.PageID;
+            indexPage.PageListSlot = 0;
 
             index.Head = head.Position;
             index.Tail = tail.Position;
@@ -59,7 +69,7 @@ namespace LiteDB.Engine
             }
 
             // random level (flip coin mode) - return number between 1-32
-            var level = this.FlipCoin();
+            var level = this.Flip();
 
             // set index collection with max-index level
             if (level > index.MaxLevel)
@@ -80,10 +90,10 @@ namespace LiteDB.Engine
             // get a free index page for head note
             var bytesLength = IndexNode.GetNodeLength(level, key, out var keyLength);
 
-            // test for index key maxlength (length must fit in 1 byte)
+            // test for index key maxlength
             if (keyLength > MAX_INDEX_KEY_LENGTH) throw LiteException.InvalidIndexKey($"Index key must be less than {MAX_INDEX_KEY_LENGTH} bytes.");
 
-            var indexPage = _snapshot.GetFreePage<IndexPage>(bytesLength);
+            var indexPage = _snapshot.GetFreeIndexPage(bytesLength, ref index.FreeIndexPageList);
 
             // create node in buffer
             var node = indexPage.InsertIndexNode(index.Slot, level, key, dataBlock, bytesLength);
@@ -107,7 +117,7 @@ namespace LiteDB.Engine
                     cache = cache != null && cache.Position == cur.Next[i] ? cache : this.GetNode(cur.Next[i]);
 
                     // read next node to compare
-                    var diff = cache.Key.CompareTo(key);
+                    var diff = cache.Key.CompareTo(key, _collation);
 
                     // if unique and diff = 0, throw index exception (must rollback transaction - others nodes can be dirty)
                     if (diff == 0 && index.Unique) throw LiteException.IndexDuplicateKey(index.Name, key);
@@ -142,7 +152,27 @@ namespace LiteDB.Engine
                 last.SetNextNode(node.Position);
             }
 
+            // fix page position in free list slot
+            _snapshot.AddOrRemoveFreeIndexList(node.Page, ref index.FreeIndexPageList);
+
             return node;
+        }
+
+
+        /// <summary>
+        /// Flip coin - skip list - returns level node (start in 1)
+        /// </summary>
+        public byte Flip()
+        {
+            byte level = 1;
+
+            for (int R = _rnd.Next(); (R & 1) == 1; R >>= 1)
+            {
+                level++;
+                if (level == MAX_LEVEL_LENGTH) break;
+            }
+
+            return level;
         }
 
         /// <summary>
@@ -173,29 +203,16 @@ namespace LiteDB.Engine
         }
 
         /// <summary>
-        /// Flip coin - skip list - returns level node (start in 1)
-        /// </summary>
-        public byte FlipCoin()
-        {
-            byte level = 1;
-            for (int R = _rand.Next(); (R & 1) == 1; R >>= 1)
-            {
-                level++;
-                if (level == MAX_LEVEL_LENGTH) break;
-            }
-            return level;
-        }
-
-        /// <summary>
         /// Deletes all indexes nodes from pkNode
         /// </summary>
         public void DeleteAll(PageAddress pkAddress)
         {
             var node = this.GetNode(pkAddress);
+            var indexes = _snapshot.CollectionPage.GetCollectionIndexesSlots();
 
             while (node != null)
             {
-                this.DeleteSingleNode(node);
+                this.DeleteSingleNode(node, indexes[node.Slot]);
 
                 // move to next node
                 node = this.GetNode(node.NextNode);
@@ -209,12 +226,13 @@ namespace LiteDB.Engine
         {
             var last = this.GetNode(pkAddress);
             var node = this.GetNode(last.NextNode); // starts in first node after PK
+            var indexes = _snapshot.CollectionPage.GetCollectionIndexesSlots();
 
             while (node != null)
             {
                 if (toDelete.Contains(node.Position))
                 {
-                    this.DeleteSingleNode(node);
+                    this.DeleteSingleNode(node, indexes[node.Slot]);
 
                     // fix single-linked list from last non-delete delete
                     last.SetNextNode(node.NextNode);
@@ -235,7 +253,7 @@ namespace LiteDB.Engine
         /// <summary>
         /// Delete a single index node - fix tree double-linked list levels
         /// </summary>
-        private void DeleteSingleNode(IndexNode node)
+        private void DeleteSingleNode(IndexNode node, CollectionIndex index)
         {
             for (int i = node.Level - 1; i >= 0; i--)
             {
@@ -253,13 +271,9 @@ namespace LiteDB.Engine
                 }
             }
 
-            // get current slot position in free list
-            var slot = BasePage.FreeIndexSlot(node.Page.FreeBytes);
-
             node.Page.DeleteIndexNode(node.Position.Index);
 
-            // update (if needed) slot position
-            _snapshot.AddOrRemoveFreeList(node.Page, slot);
+            _snapshot.AddOrRemoveFreeIndexList(node.Page, ref index.FreeIndexPageList);
         }
 
         /// <summary>
@@ -334,7 +348,7 @@ namespace LiteDB.Engine
                 for (; cur.GetNextPrev((byte)i, order).IsEmpty == false; cur = this.GetNode(cur.GetNextPrev((byte)i, order)))
                 {
                     var next = this.GetNode(cur.GetNextPrev((byte)i, order));
-                    var diff = next.Key.CompareTo(value);
+                    var diff = next.Key.CompareTo(value, _collation);
 
                     if (diff == order && (i > 0 || !sibling)) break;
                     if (diff == order && i == 0 && sibling)

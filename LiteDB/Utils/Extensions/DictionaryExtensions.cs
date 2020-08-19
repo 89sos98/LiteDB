@@ -100,7 +100,7 @@ namespace LiteDB
 
                             EatWhitespace();
 
-                            if (connectionString[position] == ';') position++;
+                            if (position < connectionString.Length && connectionString[position] == ';') position++;
 
                             return sb.ToString();
                         }
@@ -132,7 +132,7 @@ namespace LiteDB
         /// <summary>
         /// Get value from dictionary converting datatype T
         /// </summary>
-        public static T GetValue<T>(this Dictionary<string, string> dict, string key, T defaultValue)
+        public static T GetValue<T>(this Dictionary<string, string> dict, string key, T defaultValue = default(T))
         {
             try
             {

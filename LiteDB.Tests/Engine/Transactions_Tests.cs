@@ -3,6 +3,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using FluentAssertions;
+using LiteDB.Engine;
 using Xunit;
 
 namespace LiteDB.Tests.Engine
@@ -15,8 +16,11 @@ namespace LiteDB.Tests.Engine
             var data1 = DataGen.Person(1, 100).ToArray();
             var data2 = DataGen.Person(101, 200).ToArray();
 
-            using (var db = new LiteDatabase("filename=:memory:;timeout=1"))
+            using (var db = new LiteDatabase("filename=:memory:"))
             {
+                // small timeout
+                db.Pragma(Pragmas.TIMEOUT, 1);
+
                 var person = db.GetCollection<Person>();
 
                 // init person collection with 100 document

@@ -21,18 +21,19 @@ namespace LiteDB.Engine
             if (name.Length > INDEX_NAME_MAX_LENGTH) throw LiteException.InvalidIndexName(name, collection, "MaxLength = " + INDEX_NAME_MAX_LENGTH);
             if (!name.IsWord()) throw LiteException.InvalidIndexName(name, collection, "Use only [a-Z$_]");
             if (name.StartsWith("$")) throw LiteException.InvalidIndexName(name, collection, "Index name can't starts with `$`");
+            if (expression.IsScalar == false && unique) throw new LiteException(0, "Multikey index expression do not support unique option");
 
-            if (name == "_id") return false; // always exists
+            if (expression.Source == "$._id") return false; // always exists
 
             return this.AutoTransaction(transaction =>
             {
                 var snapshot = transaction.CreateSnapshot(LockMode.Write, collection, true);
-                var col = snapshot.CollectionPage;
-                var indexer = new IndexService(snapshot);
+                var collectionPage = snapshot.CollectionPage;
+                var indexer = new IndexService(snapshot, _header.Pragmas.Collation);
                 var data = new DataService(snapshot);
 
                 // check if index already exists
-                var current = col.GetCollectionIndex(name);
+                var current = collectionPage.GetCollectionIndex(name);
 
                 // if already exists, just exit
                 if (current != null)
@@ -50,7 +51,7 @@ namespace LiteDB.Engine
                 var count = 0u;
 
                 // read all objects (read from PK index)
-                foreach (var pkNode in new IndexAll("_id", LiteDB.Query.Ascending).Run(col, indexer))
+                foreach (var pkNode in new IndexAll("_id", LiteDB.Query.Ascending).Run(collectionPage, indexer))
                 {
                     using (var reader = new BufferReader(data.Read(pkNode.DataBlock)))
                     {
@@ -61,40 +62,19 @@ namespace LiteDB.Engine
                         IndexNode first = null;
 
                         // get values from expression in document
-                        var keys = expression.Execute(doc);
+                        var keys = expression.GetIndexKeys(doc, _header.Pragmas.Collation);
 
                         // adding index node for each value
                         foreach (var key in keys)
                         {
-                            // when index key is an array, get items inside array.
-                            // valid only for first level (if this items are another array, this arrays will be indexed as array)
-                            if (key.IsArray)
-                            {
-                                var arr = key.AsArray;
+                            // insert new index node
+                            var node = indexer.AddNode(index, key, pkNode.DataBlock, last);
 
-                                foreach(var itemKey in arr)
-                                {
-                                    // insert new index node
-                                    var node = indexer.AddNode(index, itemKey, pkNode.DataBlock, last);
+                            if (first == null) first = node;
 
-                                    if (first == null) first = node;
+                            last = node;
 
-                                    last = node;
-
-                                    count++;
-                                }
-                            }
-                            else
-                            {
-                                // insert new index node
-                                var node = indexer.AddNode(index, key, pkNode.DataBlock, last);
-
-                                if (first == null) first = node;
-
-                                last = node;
-
-                                count++;
-                            }
+                            count++;
                         }
 
                         // fix single linked-list in pkNode
@@ -107,8 +87,6 @@ namespace LiteDB.Engine
 
                     transaction.Safepoint();
                 }
-
-                index.KeyCount = count;
 
                 return true;
             });
@@ -128,7 +106,7 @@ namespace LiteDB.Engine
             {
                 var snapshot = transaction.CreateSnapshot(LockMode.Write, collection, false);
                 var col = snapshot.CollectionPage;
-                var indexer = new IndexService(snapshot);
+                var indexer = new IndexService(snapshot, _header.Pragmas.Collation);
             
                 // no collection, no index
                 if (col == null) return false;

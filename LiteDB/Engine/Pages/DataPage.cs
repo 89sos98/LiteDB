@@ -16,7 +16,9 @@ namespace LiteDB.Engine
         public DataPage(PageBuffer buffer)
             : base(buffer)
         {
-            if (this.PageType != PageType.Data) throw new LiteException(0, $"Invalid DataPage buffer on {PageID}");
+            ENSURE(this.PageType == PageType.Data, "page type must be data page");
+
+            if (this.PageType != PageType.Data) throw LiteException.InvalidPageType(PageType.Data, this);
         }
 
         /// <summary>
@@ -68,7 +70,7 @@ namespace LiteDB.Engine
         /// <summary>
         /// Get all block positions inside this page that are not extend blocks (initial data block)
         /// </summary>
-        public IEnumerable<PageAddress> GetBlocks(bool onlyDataBlock)
+        public IEnumerable<PageAddress> GetBlocks()
         {
             foreach(var index in base.GetUsedIndexs())
             {
@@ -77,11 +79,51 @@ namespace LiteDB.Engine
 
                 var extend = _buffer.ReadBool(position + DataBlock.P_EXTEND);
 
-                if (onlyDataBlock == false || extend == false)
+                if (extend == false)
                 {
                     yield return new PageAddress(this.PageID, index);
                 }
             }
+        }
+
+        /// <summary>
+        /// FreeBytes ranges on page slot for free list page
+        /// 90% - 100% = 0 (7344 - 8160)
+        /// 75% -  90% = 1 (6120 - 7343)
+        /// 60% -  75% = 2 (4896 - 6119)
+        /// 30% -  60% = 3 (2448 - 4895)
+        ///  0% -  30% = 4 (0000 - 2447)
+        /// </summary>
+        private static int[] _freePageSlots = new[]
+        {
+            (int)((PAGE_SIZE - PAGE_HEADER_SIZE) * .90), // 0
+            (int)((PAGE_SIZE - PAGE_HEADER_SIZE) * .75), // 1
+            (int)((PAGE_SIZE - PAGE_HEADER_SIZE) * .60), // 2
+            (int)((PAGE_SIZE - PAGE_HEADER_SIZE) * .30)  // 3
+        };
+
+        /// <summary>
+        /// Get page index slot on FreeDataPageID
+        /// </summary>
+        public static byte FreeIndexSlot(int freeBytes)
+        {
+            ENSURE(freeBytes >= 0, "freeBytes must be positive");
+
+            for (var i = 0; i < _freePageSlots.Length; i++)
+            {
+                if (freeBytes >= _freePageSlots[i]) return (byte)i;
+            }
+
+            return PAGE_FREE_LIST_SLOTS - 1; // Slot 4 (last slot)
+        }
+
+        /// <summary>
+        /// Get minimum slot with space enough for your data content
+        /// Returns -1 if no space guaranteed (more than 90%)
+        /// </summary>
+        public static int GetMinimumIndexSlot(int length)
+        {
+            return FreeIndexSlot(length) - 1;
         }
     }
 }

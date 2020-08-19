@@ -1,72 +1,77 @@
 ﻿using LiteDB.Engine;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Linq.Expressions;
+using System.Threading;
+#if NETFRAMEWORK
+using System.Security.AccessControl;
+using System.Security.Principal;
+#endif
 
 namespace LiteDB
 {
     public class SharedEngine : ILiteEngine
     {
         private readonly EngineSettings _settings;
-        private readonly CrossProcessReaderWriterLock _locker;
-
+        private readonly Mutex _mutex;
         private LiteEngine _engine;
         private int _stack = 0;
-        private bool _disposed = false;
 
         public SharedEngine(EngineSettings settings)
         {
             _settings = settings;
 
-            var name = settings.Filename.ToLower().Sha1();
+            var name = Path.GetFullPath(settings.Filename).ToLower().Sha1();
 
-            _locker = new CrossProcessReaderWriterLock(name);
-        }
-
-        /// <summary>
-        /// Open engine as readonly and stack operation
-        /// </summary>
-        private void OpenRead()
-        {
-            lock (_locker)
+            try
             {
-                _stack++;
+#if NETFRAMEWORK
+                var allowEveryoneRule = new MutexAccessRule(new SecurityIdentifier(WellKnownSidType.WorldSid, null),
+                           MutexRights.FullControl, AccessControlType.Allow);
 
-                if (_stack == 1)
-                {
-                    _locker.AcquireReaderLock();
+                var securitySettings = new MutexSecurity();
+                securitySettings.AddAccessRule(allowEveryoneRule);
 
-                    _settings.ReadOnly = true;
-
-                    _engine = new LiteEngine(_settings);
-                }
+                _mutex = new Mutex(false, "Global\\" + name + ".Mutex", out _, securitySettings);
+#else
+                _mutex = new Mutex(false, "Global\\" + name + ".Mutex");
+#endif
+            }
+            catch (NotSupportedException ex)
+            {
+                throw new PlatformNotSupportedException("Shared mode is not supported in platforms that do not implement named mutex.", ex);
             }
         }
 
         /// <summary>
-        /// Open engine as writable and stack operation
+        /// Open database in safe mode
         /// </summary>
-        private void OpenWrite()
+        private void OpenDatabase()
         {
-            lock(_locker)
+            lock (_mutex)
             {
                 _stack++;
 
                 if (_stack == 1)
                 {
-                    _locker.AcquireWriterLock();
+                    try
+                    {
+                        _mutex.WaitOne();
+                    }
+                    catch (AbandonedMutexException) { }
 
-                    _settings.ReadOnly = false;
-
-                    _engine = new LiteEngine(_settings);
-                }
-                else if (_settings.ReadOnly)
-                {
-                    // if database already open in readonly mode, change to writeable mode
-                    _settings.ReadOnly = false;
-                    _engine.Dispose();
-                    _engine = new LiteEngine(_settings);
+                    try
+                    {
+                        _engine = new LiteEngine(_settings);
+                    }
+                    catch
+                    {
+                        _mutex.ReleaseMutex();
+                        _stack = 0;
+                        throw;
+                    }
                 }
             }
         }
@@ -74,9 +79,9 @@ namespace LiteDB
         /// <summary>
         /// Dequeue stack and dispose database on empty stack
         /// </summary>
-        private void Close()
+        private void CloseDatabase()
         {
-            lock(_locker)
+            lock (_mutex)
             {
                 _stack--;
 
@@ -85,58 +90,31 @@ namespace LiteDB
                     _engine.Dispose();
                     _engine = null;
 
-                    // release locker
-                    if (_settings.ReadOnly)
-                    {
-                        _locker.ReleaseReaderLock();
-                    }
-                    else
-                    {
-                        _locker.ReleaseWriterLock();
-                    }
+                    _mutex.ReleaseMutex();
                 }
             }
-        }
-
-        public void Dispose()
-        {
-            if (_disposed) return;
-
-            _disposed = true;
-
-            if (_engine != null)
-            {
-                if (_settings.ReadOnly)
-                {
-                    _locker.ReleaseReaderLock();
-                }
-                else
-                {
-                    _locker.ReleaseWriterLock();
-                }
-
-                _engine.Dispose();
-            }
-        }
-
-        ~SharedEngine()
-        {
-            this.Dispose();
         }
 
         #region Transaction Operations
 
         public bool BeginTrans()
         {
-            this.OpenWrite();
+            this.OpenDatabase();
 
             try
             {
-                return _engine.BeginTrans();
+                var result = _engine.BeginTrans();
+
+                if (result == false)
+                {
+                    _stack--;
+                }
+
+                return result;
             }
             catch
             {
-                this.Close();
+                this.CloseDatabase();
                 throw;
             }
         }
@@ -151,7 +129,7 @@ namespace LiteDB
             }
             finally
             {
-                this.Close();
+                this.CloseDatabase();
             }
         }
 
@@ -165,7 +143,7 @@ namespace LiteDB
             }
             finally
             {
-                this.Close();
+                this.CloseDatabase();
             }
         }
 
@@ -175,62 +153,76 @@ namespace LiteDB
 
         public IBsonDataReader Query(string collection, Query query)
         {
-            this.OpenRead();
+            this.OpenDatabase();
 
             var reader = _engine.Query(collection, query);
 
-            return new SharedDataReader(reader, () => this.Close());
+            return new SharedDataReader(reader, () => this.CloseDatabase());
+        }
+
+        public BsonValue Pragma(string name)
+        {
+            this.OpenDatabase();
+
+            try
+            {
+                return _engine.Pragma(name);
+            }
+            finally
+            {
+                this.CloseDatabase();
+            }
+        }
+
+        public bool Pragma(string name, BsonValue value)
+        {
+            this.OpenDatabase();
+
+            try
+            {
+                return _engine.Pragma(name, value);
+            }
+            finally
+            {
+                this.CloseDatabase();
+            }
         }
 
         #endregion
 
         #region Write Operations
 
-        public int Analyze(string[] collections)
+        public int Checkpoint()
         {
-            this.OpenWrite();
+            this.OpenDatabase();
 
             try
             {
-                return _engine.Analyze(collections);
+                return _engine.Checkpoint();
             }
             finally
             {
-                this.Close();
+                this.CloseDatabase();
             }
         }
 
-        public void Checkpoint()
+        public long Rebuild(RebuildOptions options)
         {
-            this.OpenWrite();
+            this.OpenDatabase();
 
             try
             {
-                _engine.Checkpoint();
+                return _engine.Rebuild(options);
             }
             finally
             {
-                this.Close();
-            }
-        }
-
-        public long Shrink()
-        {
-            this.OpenWrite();
-
-            try
-            {
-                return _engine.Shrink();
-            }
-            finally
-            {
-                this.Close();
+                this.CloseDatabase();
             }
         }
 
         public int Insert(string collection, IEnumerable<BsonDocument> docs, BsonAutoId autoId)
         {
-            this.OpenWrite();
+            this.OpenDatabase();
 
             try
             {
@@ -238,13 +230,13 @@ namespace LiteDB
             }
             finally
             {
-                this.Close();
+                this.CloseDatabase();
             }
         }
 
         public int Update(string collection, IEnumerable<BsonDocument> docs)
         {
-            this.OpenWrite();
+            this.OpenDatabase();
 
             try
             {
@@ -252,13 +244,13 @@ namespace LiteDB
             }
             finally
             {
-                this.Close();
+                this.CloseDatabase();
             }
         }
 
         public int UpdateMany(string collection, BsonExpression extend, BsonExpression predicate)
         {
-            this.OpenWrite();
+            this.OpenDatabase();
 
             try
             {
@@ -266,13 +258,13 @@ namespace LiteDB
             }
             finally
             {
-                this.Close();
+                this.CloseDatabase();
             }
         }
 
         public int Upsert(string collection, IEnumerable<BsonDocument> docs, BsonAutoId autoId)
         {
-            this.OpenWrite();
+            this.OpenDatabase();
 
             try
             {
@@ -280,13 +272,13 @@ namespace LiteDB
             }
             finally
             {
-                this.Close();
+                this.CloseDatabase();
             }
         }
 
         public int Delete(string collection, IEnumerable<BsonValue> ids)
         {
-            this.OpenWrite();
+            this.OpenDatabase();
 
             try
             {
@@ -294,13 +286,13 @@ namespace LiteDB
             }
             finally
             {
-                this.Close();
+                this.CloseDatabase();
             }
         }
 
         public int DeleteMany(string collection, BsonExpression predicate)
         {
-            this.OpenWrite();
+            this.OpenDatabase();
 
             try
             {
@@ -308,13 +300,13 @@ namespace LiteDB
             }
             finally
             {
-                this.Close();
+                this.CloseDatabase();
             }
         }
 
         public bool DropCollection(string name)
         {
-            this.OpenWrite();
+            this.OpenDatabase();
 
             try
             {
@@ -322,13 +314,13 @@ namespace LiteDB
             }
             finally
             {
-                this.Close();
+                this.CloseDatabase();
             }
         }
 
         public bool RenameCollection(string name, string newName)
         {
-            this.OpenWrite();
+            this.OpenDatabase();
 
             try
             {
@@ -336,13 +328,13 @@ namespace LiteDB
             }
             finally
             {
-                this.Close();
+                this.CloseDatabase();
             }
         }
 
         public bool DropIndex(string collection, string name)
         {
-            this.OpenWrite();
+            this.OpenDatabase();
 
             try
             {
@@ -350,13 +342,13 @@ namespace LiteDB
             }
             finally
             {
-                this.Close();
+                this.CloseDatabase();
             }
         }
 
         public bool EnsureIndex(string collection, string name, BsonExpression expression, bool unique)
         {
-            this.OpenWrite();
+            this.OpenDatabase();
 
             try
             {
@@ -364,10 +356,34 @@ namespace LiteDB
             }
             finally
             {
-                this.Close();
+                this.CloseDatabase();
             }
         }
 
         #endregion
+
+        public void Dispose()
+        {
+            this.Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+
+        ~SharedEngine()
+        {
+            this.Dispose(false);
+        }
+
+        protected virtual void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                if (_engine != null)
+                {
+                    _engine.Dispose();
+
+                    _mutex.ReleaseMutex();
+                }
+            }
+        }
     }
 }

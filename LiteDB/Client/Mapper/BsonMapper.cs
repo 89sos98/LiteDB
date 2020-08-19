@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Linq.Expressions;
@@ -23,8 +24,6 @@ namespace LiteDB
     /// </summary>
     public partial class BsonMapper
     {
-        private const int MAX_DEPTH = 20;
-
         #region Properties
 
         /// <summary>
@@ -35,9 +34,9 @@ namespace LiteDB
         /// <summary>
         /// Map serializer/deserialize for custom types
         /// </summary>
-        private Dictionary<Type, Func<object, BsonValue>> _customSerializer = new Dictionary<Type, Func<object, BsonValue>>();
+        private ConcurrentDictionary<Type, Func<object, BsonValue>> _customSerializer = new ConcurrentDictionary<Type, Func<object, BsonValue>>();
 
-        private Dictionary<Type, Func<BsonValue, object>> _customDeserializer = new Dictionary<Type, Func<BsonValue, object>>();
+        private ConcurrentDictionary<Type, Func<BsonValue, object>> _customDeserializer = new ConcurrentDictionary<Type, Func<BsonValue, object>>();
 
         /// <summary>
         /// Type instantiator function to support IoC
@@ -75,6 +74,12 @@ namespace LiteDB
         public bool EmptyStringToNull { get; set; }
 
         /// <summary>
+        /// Get/Set if enum must be converted into Integer value. If false, enum will be converted into String value.
+        /// MUST BE "true" to support LINQ expressions (default false)
+        /// </summary>
+        public bool EnumAsInteger { get; set; }
+
+        /// <summary>
         /// Get/Set that mapper must include fields (default: false)
         /// </summary>
         public bool IncludeFields { get; set; }
@@ -83,6 +88,11 @@ namespace LiteDB
         /// Get/Set that mapper must include non public (private, protected and internal) (default: false)
         /// </summary>
         public bool IncludeNonPublic { get; set; }
+
+        /// <summary>
+        /// Get/Set maximum depth for nested object (default 20)
+        /// </summary>
+        public int MaxDepth { get; set; }
 
         /// <summary>
         /// A custom callback to change MemberInfo behavior when converting to MemberMapper.
@@ -103,10 +113,12 @@ namespace LiteDB
             this.SerializeNullValues = false;
             this.TrimWhitespace = true;
             this.EmptyStringToNull = true;
+            this.EnumAsInteger = false;
             this.ResolveFieldName = (s) => s;
             this.ResolveMember = (t, mi, mm) => { };
-            this.ResolveCollectionName = (t) => Reflection.IsList(t) ? Reflection.GetListItemType(t).Name : t.Name;
+            this.ResolveCollectionName = (t) => Reflection.IsEnumerable(t) ? Reflection.GetListItemType(t).Name : t.Name;
             this.IncludeFields = false;
+            this.MaxDepth = 20;
 
             _typeInstantiator = customTypeInstantiator ?? ((Type t) => null);
             _typeNameBinder = typeNameBinder ?? DefaultTypeNameBinder.Instance;
@@ -229,11 +241,7 @@ namespace LiteDB
         /// </summary>
         protected virtual EntityMapper BuildEntityMapper(Type type)
         {
-            var mapper = new EntityMapper
-            {
-                Members = new List<MemberMapper>(),
-                ForType = type
-            };
+            var mapper = new EntityMapper(type);
 
             var idAttr = typeof(BsonIdAttribute);
             var ignoreAttr = typeof(BsonIgnoreAttribute);
@@ -246,13 +254,13 @@ namespace LiteDB
             foreach (var memberInfo in members)
             {
                 // checks [BsonIgnore]
-                if (memberInfo.IsDefined(ignoreAttr, true)) continue;
+                if (CustomAttributeExtensions.IsDefined(memberInfo, ignoreAttr, true)) continue;
 
                 // checks field name conversion
                 var name = this.ResolveFieldName(memberInfo.Name);
 
                 // check if property has [BsonField]
-                var field = (BsonFieldAttribute)memberInfo.GetCustomAttributes(fieldAttr, false).FirstOrDefault();
+                var field = (BsonFieldAttribute)CustomAttributeExtensions.GetCustomAttributes(memberInfo, fieldAttr, true).FirstOrDefault();
 
                 // check if property has [BsonField] with a custom field name
                 if (field != null && field.Name != null)
@@ -271,7 +279,7 @@ namespace LiteDB
                 var setter = Reflection.CreateGenericSetter(type, memberInfo);
 
                 // check if property has [BsonId] to get with was setted AutoId = true
-                var autoId = (BsonIdAttribute)memberInfo.GetCustomAttributes(idAttr, false).FirstOrDefault();
+                var autoId = (BsonIdAttribute)CustomAttributeExtensions.GetCustomAttributes(memberInfo, idAttr, true).FirstOrDefault();
 
                 // get data type
                 var dataType = memberInfo is PropertyInfo ?
@@ -279,7 +287,7 @@ namespace LiteDB
                     (memberInfo as FieldInfo).FieldType;
 
                 // check if datatype is list/array
-                var isList = Reflection.IsList(dataType);
+                var isEnumerable = Reflection.IsEnumerable(dataType);
 
                 // create a property mapper
                 var member = new MemberMapper
@@ -288,14 +296,14 @@ namespace LiteDB
                     FieldName = name,
                     MemberName = memberInfo.Name,
                     DataType = dataType,
-                    IsList = isList,
-                    UnderlyingType = isList ? Reflection.GetListItemType(dataType) : dataType,
+                    IsEnumerable = isEnumerable,
+                    UnderlyingType = isEnumerable ? Reflection.GetListItemType(dataType) : dataType,
                     Getter = getter,
                     Setter = setter
                 };
 
                 // check if property has [BsonRef]
-                var dbRef = (BsonRefAttribute)memberInfo.GetCustomAttributes(dbrefAttr, false).FirstOrDefault();
+                var dbRef = (BsonRefAttribute)CustomAttributeExtensions.GetCustomAttributes(memberInfo, dbrefAttr, false).FirstOrDefault();
 
                 if (dbRef != null && memberInfo is PropertyInfo)
                 {
@@ -306,14 +314,11 @@ namespace LiteDB
                 this.ResolveMember?.Invoke(type, memberInfo, member);
 
                 // test if has name and there is no duplicate field
-                if (member.FieldName != null && mapper.Members.Any(x => x.FieldName.Equals(name, StringComparison.InvariantCultureIgnoreCase)) == false)
+                if (member.FieldName != null && mapper.Members.Any(x => x.FieldName.Equals(name, StringComparison.OrdinalIgnoreCase)) == false)
                 {
                     mapper.Members.Add(member);
                 }
             }
-
-            // call createInstance after fill all fields
-            mapper.CreateInstance = this.GetTypeCtor(mapper);
 
             return mapper;
         }
@@ -324,7 +329,7 @@ namespace LiteDB
         protected virtual MemberInfo GetIdMember(IEnumerable<MemberInfo> members)
         {
             return Reflection.SelectMember(members,
-                x => Attribute.IsDefined(x, typeof(BsonIdAttribute), true),
+                x => CustomAttributeExtensions.IsDefined(x, typeof(BsonIdAttribute), true),
                 x => x.Name.Equals("Id", StringComparison.OrdinalIgnoreCase),
                 x => x.Name.Equals(x.DeclaringType.Name + "Id", StringComparison.OrdinalIgnoreCase));
         }
@@ -344,7 +349,7 @@ namespace LiteDB
                 .Where(x => x.CanRead && x.GetIndexParameters().Length == 0)
                 .Select(x => x as MemberInfo));
 
-            if(this.IncludeFields)
+            if (this.IncludeFields)
             {
                 members.AddRange(type.GetFields(flags).Where(x => !x.Name.EndsWith("k__BackingField") && x.IsStatic == false).Select(x => x as MemberInfo));
             }
@@ -362,10 +367,10 @@ namespace LiteDB
         {
             var ctors = mapper.ForType.GetConstructors();
 
-            var ctor = 
+            var ctor =
                 ctors.FirstOrDefault(x => x.GetCustomAttribute<BsonCtorAttribute>() != null && x.GetParameters().All(p => Reflection.ConvertType.ContainsKey(p.ParameterType))) ??
                 ctors.FirstOrDefault(x => x.GetParameters().Length == 0) ??
-                ctors.FirstOrDefault(x => x.GetParameters().All(p => Reflection.ConvertType.ContainsKey(p.ParameterType)));
+                ctors.FirstOrDefault(x => x.GetParameters().All(p => Reflection.ConvertType.ContainsKey(p.ParameterType) || _customDeserializer.ContainsKey(p.ParameterType)));
 
             if (ctor == null) return null;
 
@@ -383,16 +388,26 @@ namespace LiteDB
                     Reflection.DocumentItemProperty,
                     new[] { Expression.Constant(name) });
 
-                var prop = Expression.Property(expr, Reflection.ConvertType[p.ParameterType]);
-
-                pars.Add(prop);
+                if (_customDeserializer.TryGetValue(p.ParameterType, out var func))
+                {
+                    var deserializer = Expression.Constant(func);
+                    var call = Expression.Invoke(deserializer, expr);
+                    var cast = Expression.Convert(call, p.ParameterType);
+                    pars.Add(cast);
+                }
+                else
+                {
+                    var propInfo = Reflection.ConvertType[p.ParameterType];
+                    var prop = Expression.Property(expr, propInfo);
+                    pars.Add(prop);
+                }
             }
 
             // get `new MyClass([params])` expression
             var newExpr = Expression.New(ctor, pars.ToArray());
 
             // get lambda expression
-            var fn = mapper.ForType.IsClass ? 
+            var fn = mapper.ForType.GetTypeInfo().IsClass ?
                 Expression.Lambda<CreateObject>(newExpr, pDoc).Compile() : // Class
                 Expression.Lambda<CreateObject>(Expression.Convert(newExpr, typeof(object)), pDoc).Compile(); // Struct
 
@@ -410,7 +425,7 @@ namespace LiteDB
         {
             member.IsDbRef = true;
 
-            if (member.IsList)
+            if (member.IsEnumerable)
             {
                 RegisterDbRefList(mapper, member, typeNameBinder, collection);
             }
@@ -456,17 +471,30 @@ namespace LiteDB
 
             member.Deserialize = (bson, m) =>
             {
-                var idRef = bson.IsDocument ? bson["$id"] : BsonValue.Null;
-                var missing = bson.IsDocument ? (bson["$missing"] == true) : false;
-                
+                // if not a document (maybe BsonValue.null) returns null
+                if (bson == null || bson.IsDocument == false) return null;
+
+                var doc = bson.AsDocument;
+                var idRef = doc["$id"];
+                var missing = doc["$missing"] == true;
+                var included = doc.ContainsKey("$ref") == false;
+
                 if (missing) return null;
 
-                return m.Deserialize(entity.ForType,
-                    idRef.IsNull ?
-                    bson : // if has no $id object was full loaded (via Include) - so deserialize using normal function
-                    bson.AsDocument.ContainsKey("$type") ?
-                        new BsonDocument { ["_id"] = idRef, ["_type"] = bson["$type"] } :
-                        new BsonDocument { ["_id"] = idRef }); // if has $id, deserialize object using only _id object
+                if (included)
+                {
+                    doc["_id"] = idRef;
+
+                    return m.Deserialize(entity.ForType, doc);
+                }
+                else
+                {
+                    return m.Deserialize(entity.ForType,
+                        doc.ContainsKey("$type") ?
+                            new BsonDocument { ["_id"] = idRef, ["_type"] = bson["$type"] } :
+                            new BsonDocument { ["_id"] = idRef }); // if has $id, deserialize object using only _id object
+                }
+
             };
         }
 
@@ -522,20 +550,26 @@ namespace LiteDB
 
                 foreach (var item in array)
                 {
-                    var refId = item["$id"];
-                    var missing = item["$missing"] == true;
-                    
+                    if (item.IsDocument == false) continue;
+
+                    var doc = item.AsDocument;
+                    var idRef = doc["$id"];
+                    var missing = doc["$missing"] == true;
+                    var included = doc.ContainsKey("$ref") == false;
+
                     // if referece document are missing, do not inlcude on output list
                     if (missing) continue;
 
                     // if refId is null was included by "include" query, so "item" is full filled document
-                    if (refId.IsNull)
+                    if (included)
                     {
+                        item["_id"] = idRef;
+
                         result.Add(item);
                     }
                     else
                     {
-                        var bsonDocument = new BsonDocument { ["_id"] = refId };
+                        var bsonDocument = new BsonDocument { ["_id"] = idRef };
 
                         if (item.AsDocument.ContainsKey("$type"))
                         {

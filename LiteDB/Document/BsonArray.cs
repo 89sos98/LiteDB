@@ -21,7 +21,7 @@ namespace LiteDB
             this.AddRange(array);
         }
 
-        public BsonArray(BsonValue[] array)
+        public BsonArray(params BsonValue[] array)
             : this()
         {
             if (array == null) throw new ArgumentNullException(nameof(array));
@@ -37,7 +37,7 @@ namespace LiteDB
             this.AddRange(items);
         }
 
-        internal new IList<BsonValue> RawValue => (List<BsonValue>)base.RawValue;
+        public new IList<BsonValue> RawValue => (IList<BsonValue>)base.RawValue;
 
         public override BsonValue this[int index]
         {
@@ -130,11 +130,6 @@ namespace LiteDB
             if (result != 0) return result;
             if (i == this.Count) return i == otherArray.Count ? 0 : -1;
             return 1;
-        }
-
-        public override string ToString()
-        {
-            return JsonSerializer.Serialize(this);
         }
 
         private int _length;

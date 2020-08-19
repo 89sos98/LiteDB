@@ -27,7 +27,7 @@ namespace LiteDB
         /// </summary>
         public virtual BsonDocument ToDocument<T>(T entity)
         {
-            return this.ToDocument(typeof(T), entity).AsDocument;
+            return this.ToDocument(typeof(T), entity)?.AsDocument;
         }
 
         /// <summary>
@@ -48,13 +48,18 @@ namespace LiteDB
 
         internal BsonValue Serialize(Type type, object obj, int depth)
         {
-            if (++depth > MAX_DEPTH) throw LiteException.DocumentMaxDepth(MAX_DEPTH, type);
+            if (++depth > MaxDepth) throw LiteException.DocumentMaxDepth(MaxDepth, type);
 
             if (obj == null) return BsonValue.Null;
 
             // if is already a bson value
             if (obj is BsonValue bsonValue) return bsonValue;
 
+            // check if is a custom type
+            else if (_customSerializer.TryGetValue(type, out var custom) || _customSerializer.TryGetValue(obj.GetType(), out custom))
+            {
+                return custom(obj);
+            }
             // test string - mapper has some special options
             else if (obj is String)
             {
@@ -99,17 +104,23 @@ namespace LiteDB
             {
                 return new BsonValue(Convert.ToDouble(obj));
             }
-            else if (obj is Char || obj is Enum)
+            else if (obj is Char)
             {
                 return new BsonValue(obj.ToString());
             }
-            // check if is a custom type
-            else if (_customSerializer.TryGetValue(type, out var custom) || _customSerializer.TryGetValue(obj.GetType(), out custom))
+            else if (obj is Enum)
             {
-                return custom(obj);
+                if (this.EnumAsInteger)
+                {
+                    return new BsonValue((int)obj);
+                }
+                else
+                {
+                    return new BsonValue(obj.ToString());
+                }
             }
             // for dictionary
-            else if (obj is IDictionary)
+            else if (obj is IDictionary dict)
             {
                 // when you are converting Dictionary<string, object>
                 if (type == typeof(object))
@@ -117,9 +128,9 @@ namespace LiteDB
                     type = obj.GetType();
                 }
 
-                var itemType = type.GetTypeInfo().GetGenericArguments()[1];
+                var itemType = type.GetTypeInfo().IsGenericType ? type.GetGenericArguments()[1] : typeof(object);
 
-                return this.SerializeDictionary(itemType, obj as IDictionary, depth);
+                return this.SerializeDictionary(itemType, dict, depth);
             }
             // check if is a list or array
             else if (obj is IEnumerable)
@@ -152,8 +163,14 @@ namespace LiteDB
             foreach (var key in dict.Keys)
             {
                 var value = dict[key];
+                var skey = key.ToString();
 
-                o[key.ToString()] = this.Serialize(type, value, depth);
+                if (key is DateTime dateKey)
+                {
+                    skey = dateKey.ToString("o");
+                }
+
+                o[skey] = this.Serialize(type, value, depth);
             }
 
             return o;

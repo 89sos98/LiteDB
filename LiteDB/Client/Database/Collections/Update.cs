@@ -11,41 +11,41 @@ namespace LiteDB
         /// <summary>
         /// Update a document in this collection. Returns false if not found document in collection
         /// </summary>
-        public bool Update(T document)
+        public bool Update(T entity)
         {
-            if (document == null) throw new ArgumentNullException(nameof(document));
+            if (entity == null) throw new ArgumentNullException(nameof(entity));
 
             // get BsonDocument from object
-            var doc = _mapper.ToDocument(document);
+            var doc = _mapper.ToDocument(entity);
 
-            return _engine.Value.Update(_collection, new BsonDocument[] { doc }) > 0;
+            return _engine.Update(_collection, new BsonDocument[] { doc }) > 0;
         }
 
         /// <summary>
         /// Update a document in this collection. Returns false if not found document in collection
         /// </summary>
-        public bool Update(BsonValue id, T document)
+        public bool Update(BsonValue id, T entity)
         {
-            if (document == null) throw new ArgumentNullException(nameof(document));
+            if (entity == null) throw new ArgumentNullException(nameof(entity));
             if (id == null || id.IsNull) throw new ArgumentNullException(nameof(id));
 
             // get BsonDocument from object
-            var doc = _mapper.ToDocument(document);
+            var doc = _mapper.ToDocument(entity);
 
             // set document _id using id parameter
             doc["_id"] = id;
 
-            return _engine.Value.Update(_collection, new BsonDocument[] { doc }) > 0;
+            return _engine.Update(_collection, new BsonDocument[] { doc }) > 0;
         }
 
         /// <summary>
         /// Update all documents
         /// </summary>
-        public int Update(IEnumerable<T> documents)
+        public int Update(IEnumerable<T> entities)
         {
-            if (documents == null) throw new ArgumentNullException(nameof(documents));
+            if (entities == null) throw new ArgumentNullException(nameof(entities));
 
-            return _engine.Value.Update(_collection, documents.Select(x => _mapper.ToDocument(x)));
+            return _engine.Update(_collection, entities.Select(x => _mapper.ToDocument(x)));
         }
 
         /// <summary>
@@ -62,7 +62,7 @@ namespace LiteDB
                 throw new ArgumentException("Extend expression must return a document. Eg: `col.UpdateMany('{ Name: UPPER(Name) }', 'Age > 10')`");
             }
 
-            return _engine.Value.UpdateMany(_collection, transform, predicate);
+            return _engine.UpdateMany(_collection, transform, predicate);
         }
 
         /// <summary>
@@ -82,7 +82,7 @@ namespace LiteDB
                 throw new ArgumentException("Extend expression must return an anonymous class to be merge with entities. Eg: `col.UpdateMany(x => new { Name = x.Name.ToUpper() }, x => x.Age > 10)`");
             }
 
-            return _engine.Value.UpdateMany(_collection, ext, pred);
+            return _engine.UpdateMany(_collection, ext, pred);
         }
     }
 }

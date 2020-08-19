@@ -8,7 +8,7 @@ namespace LiteDB.Engine
     internal class DataService
     {
         /// <summary>
-        /// Get maximum data bytes[] that fit in 1 page = 8149
+        /// Get maximum data bytes[] that fit in 1 page = 8150
         /// </summary>
         public const int MAX_DATA_BYTES_PER_PAGE =
             PAGE_SIZE - // 8192
@@ -42,7 +42,7 @@ namespace LiteDB.Engine
                 while (bytesLeft > 0)
                 {
                     var bytesToCopy = Math.Min(bytesLeft, MAX_DATA_BYTES_PER_PAGE);
-                    var dataPage = _snapshot.GetFreePage<DataPage>(bytesToCopy + DataBlock.DATA_BLOCK_FIXED_SIZE);
+                    var dataPage = _snapshot.GetFreeDataPage(bytesToCopy + DataBlock.DATA_BLOCK_FIXED_SIZE);
                     var dataBlock = dataPage.InsertBlock(bytesToCopy, blockIndex++ > 0);
 
                     if (lastBlock != null)
@@ -51,6 +51,8 @@ namespace LiteDB.Engine
                     }
 
                     if (firstBlock.IsEmpty) firstBlock = dataBlock.Position;
+
+                    _snapshot.AddOrRemoveFreeDataList(dataPage);
 
                     yield return dataBlock.Buffer;
 
@@ -96,33 +98,32 @@ namespace LiteDB.Engine
                         var dataPage = _snapshot.GetPage<DataPage>(updateAddress.PageID);
                         var currentBlock = dataPage.GetBlock(updateAddress.Index);
 
-                        // try get full page size content
+                        // try get full page size content (do not add DATA_BLOCK_FIXED_SIZE because will be added in UpdateBlock)
                         bytesToCopy = Math.Min(bytesLeft, dataPage.FreeBytes + currentBlock.Buffer.Count);
-
-                        // get current free slot linked list
-                        var slot = BasePage.FreeIndexSlot(dataPage.FreeBytes);
 
                         var updateBlock = dataPage.UpdateBlock(currentBlock, bytesToCopy);
 
-                        _snapshot.AddOrRemoveFreeList(dataPage, slot);
+                        _snapshot.AddOrRemoveFreeDataList(dataPage);
 
                         yield return updateBlock.Buffer;
 
                         lastBlock = updateBlock;
 
-                        // go to next address (if extits)
+                        // go to next address (if exists)
                         updateAddress = updateBlock.NextBlock;
                     }
                     else
                     {
                         bytesToCopy = Math.Min(bytesLeft, MAX_DATA_BYTES_PER_PAGE);
-                        var dataPage = _snapshot.GetFreePage<DataPage>(bytesToCopy + DataBlock.DATA_BLOCK_FIXED_SIZE);
+                        var dataPage = _snapshot.GetFreeDataPage(bytesToCopy + DataBlock.DATA_BLOCK_FIXED_SIZE);
                         var insertBlock = dataPage.InsertBlock(bytesToCopy, true);
 
                         if (lastBlock != null)
                         {
                             lastBlock.SetNextBlock(insertBlock.Position);
                         }
+
+                        _snapshot.AddOrRemoveFreeDataList(dataPage);
 
                         yield return insertBlock.Buffer;
 
@@ -135,7 +136,11 @@ namespace LiteDB.Engine
                 // old document was bigger than current, must delete extend blocks
                 if (lastBlock.NextBlock.IsEmpty == false)
                 {
-                    this.Delete(lastBlock.NextBlock);
+                    var nextBlockAddress = lastBlock.NextBlock;
+
+                    lastBlock.SetNextBlock(PageAddress.Empty);
+
+                    this.Delete(nextBlockAddress);
                 }
             }
 
@@ -176,13 +181,12 @@ namespace LiteDB.Engine
             {
                 var page = _snapshot.GetPage<DataPage>(blockAddress.PageID);
                 var block = page.GetBlock(blockAddress.Index);
-                var slot = BasePage.FreeIndexSlot(page.FreeBytes);
 
                 // delete block inside page
                 page.DeleteBlock(blockAddress.Index);
 
                 // fix page empty list (or delete page)
-                _snapshot.AddOrRemoveFreeList(page, slot);
+                _snapshot.AddOrRemoveFreeDataList(page);
 
                 blockAddress = block.NextBlock;
             }

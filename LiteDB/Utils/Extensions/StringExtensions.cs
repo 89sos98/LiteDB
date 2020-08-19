@@ -20,7 +20,7 @@ namespace LiteDB
         {
             if (string.IsNullOrWhiteSpace(str)) return false;
 
-            for(var i = 0; i < str.Length; i++)
+            for (var i = 0; i < str.Length; i++)
             {
                 if (!Tokenizer.IsWordChar(str[i], i == 0)) return false;
             }
@@ -39,7 +39,7 @@ namespace LiteDB
         {
             var data = Encoding.UTF8.GetBytes(value);
 
-            using (var sha = new SHA1Managed())
+            using (var sha = SHA1.Create())
             {
                 var hashData = sha.ComputeHash(data);
                 var hash = new StringBuilder();
@@ -58,7 +58,7 @@ namespace LiteDB
         /// https://stackoverflow.com/a/8583383/3286260
         /// I remove support for [ and ] to avoid missing close brackets
         /// </summary>
-        public static bool SqlLike(this string str, string pattern)
+        public static bool SqlLike(this string str, string pattern, Collation collation)
         {
             var isMatch = true;
             var isWildCardOn = false;
@@ -68,7 +68,6 @@ namespace LiteDB
             var endOfPattern = false;
             var lastWildCard = -1;
             var patternIndex = 0;
-            //var set = new List<char>();
             var p = '\0';
 
             for (var i = 0; i < str.Length; i++)
@@ -141,7 +140,7 @@ namespace LiteDB
                 }
                 else
                 {
-                    if (char.ToUpper(c) == char.ToUpper(p))
+                    if (collation.Compare(c, p) == 0)
                     {
                         patternIndex++;
                     }
@@ -190,7 +189,7 @@ namespace LiteDB
             var len = str.Length;
             var c = '\0';
 
-            while(i < len)
+            while (i < len)
             {
                 c = str[i];
 

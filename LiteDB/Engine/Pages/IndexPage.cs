@@ -16,7 +16,9 @@ namespace LiteDB.Engine
         public IndexPage(PageBuffer buffer)
             : base(buffer)
         {
-            if (this.PageType != PageType.Index) throw new LiteException(0, $"Invalid IndexPage buffer on {PageID}");
+            ENSURE(this.PageType == PageType.Index, "page type must be index page");
+
+            if (this.PageType != PageType.Index) throw LiteException.InvalidPageType(PageType.Index, this);
         }
 
         /// <summary>
@@ -68,6 +70,18 @@ namespace LiteDB.Engine
             {
                 yield return this.GetIndexNode(index);
             }
+        }
+
+        /// <summary>
+        /// Get page index slot on FreeIndexPageID 
+        /// 8160 - 600 : Slot #0
+        /// 599  -   0 : Slot #1 (no page in list)
+        /// </summary>
+        public static byte FreeIndexSlot(int freeBytes)
+        {
+            ENSURE(freeBytes >= 0, "freeBytes must be positive");
+
+            return freeBytes >= MAX_INDEX_LENGTH ? (byte)0 : (byte)1;
         }
     }
 }

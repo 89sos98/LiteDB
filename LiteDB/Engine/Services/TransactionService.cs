@@ -12,7 +12,7 @@ namespace LiteDB.Engine
     /// Represent a single transaction service. Need a new instance for each transaction.
     /// You must run each transaction in a different thread - no 2 transaction in same thread (locks as per-thread)
     /// </summary>
-    internal class TransactionService
+    internal class TransactionService : IDisposable
     {
         // instances from Engine
         private readonly HeaderPage _header;
@@ -25,22 +25,23 @@ namespace LiteDB.Engine
         // transaction controls
         private readonly Dictionary<string, Snapshot> _snapshots = new Dictionary<string, Snapshot>(StringComparer.OrdinalIgnoreCase);
         private readonly TransactionPages _transPages = new TransactionPages();
-        private readonly Action<uint> _done;
 
         // transaction info
-        private readonly int _threadID = Thread.CurrentThread.ManagedThreadId;
+        private readonly int _threadID = Environment.CurrentManagedThreadId;
         private readonly uint _transactionID;
         private readonly DateTime _startTime;
         private LockMode _mode = LockMode.Read;
-        private bool _disposed = false;
+        private TransactionState _state = TransactionState.Active;
 
         // expose (as read only)
         public int ThreadID => _threadID;
         public uint TransactionID => _transactionID;
+        public TransactionState State => _state;
         public LockMode Mode => _mode;
         public TransactionPages Pages => _transPages;
         public DateTime StartTime => _startTime;
         public IEnumerable<Snapshot> Snapshots => _snapshots.Values;
+        public bool QueryOnly { get; }
 
         // get/set
         public int MaxTransactionSize { get; set; }
@@ -48,14 +49,14 @@ namespace LiteDB.Engine
         /// <summary>
         /// Get/Set how many open cursor this transaction are running
         /// </summary>
-        public int OpenCursors { get; set; } = 0;
+        public List<CursorInfo> OpenCursors { get; } = new List<CursorInfo>();
 
         /// <summary>
         /// Get/Set if this transaction was opened by BeginTrans() method (not by AutoTransaction/Cursor)
         /// </summary>
         public bool ExplicitTransaction { get; set; } = false;
 
-        public TransactionService(HeaderPage header, LockService locker, DiskService disk, WalIndexService walIndex, int maxTransactionSize, TransactionMonitor monitor, Action<uint> done)
+        public TransactionService(HeaderPage header, LockService locker, DiskService disk, WalIndexService walIndex, int maxTransactionSize, TransactionMonitor monitor, bool queryOnly)
         {
             // retain instances
             _header = header;
@@ -63,17 +64,14 @@ namespace LiteDB.Engine
             _disk = disk;
             _walIndex = walIndex;
             _monitor = monitor;
-            _done = done;
 
+            this.QueryOnly = queryOnly;
             this.MaxTransactionSize = maxTransactionSize;
 
             // create new transactionID
             _transactionID = walIndex.NextTransactionID();
             _startTime = DateTime.UtcNow;
             _reader = _disk.GetReader();
-
-            // enter transaction locker to avoid 2 transactions in same thread
-            _locker.EnterTransaction();
         }
 
         /// <summary>
@@ -81,14 +79,15 @@ namespace LiteDB.Engine
         /// </summary>
         public Snapshot CreateSnapshot(LockMode mode, string collection, bool addIfNotExists)
         {
-            ENSURE(_disposed == false, "transaction must be active to create new snapshot");
+            ENSURE(_state == TransactionState.Active, "transaction must be active to create new snapshot");
 
             Snapshot create() => new Snapshot(mode, collection, _header, _transactionID, _transPages, _locker, _walIndex, _reader, addIfNotExists);
 
             if (_snapshots.TryGetValue(collection, out var snapshot))
             {
                 // if current snapshot are ReadOnly but request is about Write mode, dispose read and re-create new in WriteMode
-                if (mode == LockMode.Write && snapshot.Mode == LockMode.Read)
+                // or if a previous snapshot was opened with addIfNotExists=false
+                if ((mode == LockMode.Write && snapshot.Mode == LockMode.Read) || (addIfNotExists && snapshot.CollectionPage == null))
                 {
                     // dispose current read-only snapshot
                     snapshot.Dispose();
@@ -117,7 +116,7 @@ namespace LiteDB.Engine
         /// </summary>
         public void Safepoint()
         {
-            if (_disposed) throw new LiteException(0, "Engine is in shutdown process");
+            if (_state != TransactionState.Active) throw new LiteException(0, "This transaction are invalid state");
 
             if (_monitor.CheckSafepoint(this))
             {
@@ -160,84 +159,47 @@ namespace LiteDB.Engine
                 // mark last dirty page as confirmed only if there is no header change in commit
                 var markLastAsConfirmed = commit && _transPages.HeaderChanged == false;
 
-                // loop across all dirty pages
-                if (markLastAsConfirmed)
+                // neet use "IsLast" method to get when loop are last item
+                foreach (var page in pages.IsLast())
                 {
-                    // neet use "IsLast" method to get when loop are last item
-                    foreach (var page in pages.IsLast())
+                    // update page transactionID
+                    page.Item.TransactionID = _transactionID;
+
+                    // if last page, mask as confirm (only if a real commit and no header changes)
+                    if (page.IsLast)
                     {
-                        // update page transactionID
-                        page.Item.TransactionID = _transactionID;
-
-                        // if last page, mask as confirm
-                        if (page.IsLast)
-                        {
-                            page.Item.IsConfirmed = true;
-                        }
-
-                        var buffer = page.Item.UpdateBuffer();
-
-                        // buffer position will be set at end of file (it´s always log file)
-                        yield return buffer;
-
-                        dirty++;
-
-                        _transPages.DirtyPages[page.Item.PageID] = new PagePosition(page.Item.PageID, buffer.Position);
+                        page.Item.IsConfirmed = markLastAsConfirmed;
                     }
-                }
-                else
-                {
-                    // avoid use "IsLast" when was not needed (better performance)
-                    foreach (var page in pages)
+
+                    // if current page is last deleted page, point this page to last free
+                    if (_transPages.LastDeletedPageID == page.Item.PageID && commit)
                     {
-                        // update page transactionID
-                        page.TransactionID = _transactionID;
+                        ENSURE(_transPages.HeaderChanged, "must header be in lock");
+                        ENSURE(page.Item.PageType == PageType.Empty, "must be marked as deleted page");
 
-                        var buffer = page.UpdateBuffer();
+                        // join existing free list pages into new list of deleted pages
+                        page.Item.NextPageID = _header.FreeEmptyPageList;
 
-                        // buffer position will be set at end of file (it´s always log file)
-                        yield return buffer;
-
-                        dirty++;
-
-                        _transPages.DirtyPages[page.PageID] = new PagePosition(page.PageID, buffer.Position);
+                        // and now, set header free list page to this new list
+                        _header.FreeEmptyPageList = _transPages.FirstDeletedPageID;
                     }
+
+                    var buffer = page.Item.UpdateBuffer();
+
+                    // buffer position will be set at end of file (it´s always log file)
+                    yield return buffer;
+
+                    dirty++;
+
+                    _transPages.DirtyPages[page.Item.PageID] = new PagePosition(page.Item.PageID, buffer.Position);
                 }
 
                 // in commit with header page change, last page will be header
                 if (commit && _transPages.HeaderChanged)
                 {
-                    // lock header page to avoid concurrency when writing on header
-                    lock (_header)
+                    lock(_header)
                     {
-                        var newEmptyPageID = _header.FreeEmptyPageID;
-
-                        // if has deleted pages in this transaction, fix FreeEmptyPageID
-                        if (_transPages.DeletedPages > 0)
-                        {
-                            // now, my free list will starts with first page ID
-                            newEmptyPageID = _transPages.FirstDeletedPageID;
-
-                            // if free empty list was not empty, let's fix my last page
-                            if (_header.FreeEmptyPageID != uint.MaxValue)
-                            {
-                                var empty = _disk.NewPage();
-
-                                // to avoid read a empty page from disk I will create new page as empty and override it
-                                var lastDeletedPage = new BasePage(empty, _transPages.LastDeletedPageID, PageType.Empty)
-                                {
-                                    // update nextPageID of last deleted page to old first page ID
-                                    NextPageID = _header.FreeEmptyPageID,
-                                    TransactionID = _transactionID
-                                };
-
-                                // this page will write twice on wal, but no problem, only this last version will be saved on data file
-                                yield return lastDeletedPage.UpdateBuffer();
-                            }
-                        }
-
                         // update this confirm page with current transactionID
-                        _header.FreeEmptyPageID = newEmptyPageID;
                         _header.TransactionID = _transactionID;
 
                         // this header page will be marked as confirmed page in log file
@@ -257,6 +219,7 @@ namespace LiteDB.Engine
                         yield return clone;
                     }
                 }
+
             };
 
             // write all dirty pages, in sequence on log-file and store references into log pages on transPages
@@ -265,20 +228,21 @@ namespace LiteDB.Engine
 
             // now, discard all clean pages (because those pages are writable and must be readable)
             // from write snapshots
-            _disk.DiscardPages(_snapshots.Values
+            _disk.DiscardCleanPages(_snapshots.Values
                     .Where(x => x.Mode == LockMode.Write)
                     .SelectMany(x => x.GetWritablePages(false, commit))
-                    .Select(x => x.Buffer), false);
+                    .Select(x => x.Buffer));
 
             return count;
         }
 
         /// <summary>
         /// Write pages into disk and confirm transaction in wal-index. Returns true if any dirty page was updated
+        /// After commit, all snapshot are closed
         /// </summary>
-        public bool Commit()
+        public void Commit()
         {
-            if (_disposed) return false;
+            ENSURE(_state == TransactionState.Active, $"transaction must be active to commit (current state: {_state})");
 
             LOG($"commit transaction ({_transPages.TransactionSize} pages)", "TRANSACTION");
 
@@ -300,17 +264,16 @@ namespace LiteDB.Engine
                 snapshot.Dispose();
             }
 
-            this.Done();
-
-            return true;
+            _state = TransactionState.Committed;
         }
 
         /// <summary>
         /// Rollback transaction operation - ignore all modified pages and return new pages into disk
+        /// After rollback, all snapshot are closed
         /// </summary>
-        public bool Rollback()
+        public void Rollback()
         {
-            if (_disposed) return false;
+            ENSURE(_state == TransactionState.Active, $"transaction must be active to rollback (current state: {_state})");
 
             LOG($"rollback transaction ({_transPages.TransactionSize} pages with {_transPages.NewPages.Count} returns)", "TRANSACTION");
 
@@ -327,19 +290,17 @@ namespace LiteDB.Engine
                 if (snapshot.Mode == LockMode.Write)
                 {
                     // discard all dirty pages
-                    _disk.DiscardPages(snapshot.GetWritablePages(true, true).Select(x => x.Buffer), true);
+                    _disk.DiscardDirtyPages(snapshot.GetWritablePages(true, true).Select(x => x.Buffer));
 
                     // discard all clean pages
-                    _disk.DiscardPages(snapshot.GetWritablePages(false, true).Select(x => x.Buffer), false);
+                    _disk.DiscardCleanPages(snapshot.GetWritablePages(false, true).Select(x => x.Buffer));
                 }
 
                 // now, release pages
                 snapshot.Dispose();
             }
 
-            this.Done();
-
-            return true;
+            _state = TransactionState.Aborted;
         }
 
         /// <summary>
@@ -363,7 +324,7 @@ namespace LiteDB.Engine
                     for (var i = 0; i < _transPages.NewPages.Count; i++)
                     {
                         var pageID = _transPages.NewPages[i];
-                        var next = i < _transPages.NewPages.Count - 1 ? _transPages.NewPages[i + 1] : _header.FreeEmptyPageID;
+                        var next = i < _transPages.NewPages.Count - 1 ? _transPages.NewPages[i + 1] : _header.FreeEmptyPageList;
 
                         var buffer = _disk.NewPage();
 
@@ -377,13 +338,11 @@ namespace LiteDB.Engine
 
                         // update wal
                         pagePositions[pageID] = new PagePosition(pageID, buffer.Position);
-
-                        if (_disposed) yield break;
                     }
 
                     // update header page with my new transaction ID
                     _header.TransactionID = transactionID;
-                    _header.FreeEmptyPageID = _transPages.NewPages[0];
+                    _header.FreeEmptyPageList = _transPages.NewPages[0];
                     _header.IsConfirmed = true;
 
                     // clone header buffer
@@ -416,60 +375,40 @@ namespace LiteDB.Engine
         }
 
         /// <summary>
-        /// Finish transaction, release lock and call done action
+        /// Dispose
         /// </summary>
-        private void Done()
+        public void Dispose()
         {
-            ENSURE(_disposed == false, "transaction must be active before call Done");
+            ENSURE(_state != TransactionState.Disposed, "transaction must be active before call Done");
 
-            _disposed = true;
-
-            _locker.ExitTransaction();
-
-            _reader.Dispose();
-
-            // call done callback
-            _done(_transactionID);
-        }
-
-        /// <summary>
-        /// Stop transaction because database are in shutdown process - not same Thread that open
-        /// </summary>
-        public void Abort()
-        {
-            if (_disposed) return;
-
-            _disposed = true;
-
-            // DO NOT call _locker.ExitTransaction - may NOT be same thread
-
-            // release disk
-            _reader.Dispose();
-
-#if DEBUG
-            // release pages only in debug mode to avoid PageBuffer destructor ENSURE conditional
-            // ---
-            // release writable snapshots
-            foreach (var snapshot in _snapshots.Values.Where(x => x.Mode == LockMode.Write))
+            // clean snapshots if there is no commit/rollback
+            if (_state == TransactionState.Active && _snapshots.Count > 0)
             {
-                // discard all dirty pages
-                _disk.DiscardPages(snapshot.GetWritablePages(true, true).Select(x => x.Buffer), true);
-
-                // discard all clean pages
-                _disk.DiscardPages(snapshot.GetWritablePages(false, true).Select(x => x.Buffer), false);
-            }
-
-            // release buffers in read-only snaphosts
-            foreach (var snapshot in _snapshots.Values.Where(x => x.Mode == LockMode.Read))
-            {
-                foreach(var page in snapshot.LocalPages)
+                // release writable snapshots
+                foreach (var snapshot in _snapshots.Values.Where(x => x.Mode == LockMode.Write))
                 {
-                    page.Buffer.Release();
+                    // discard all dirty pages
+                    _disk.DiscardDirtyPages(snapshot.GetWritablePages(true, true).Select(x => x.Buffer));
+
+                    // discard all clean pages
+                    _disk.DiscardCleanPages(snapshot.GetWritablePages(false, true).Select(x => x.Buffer));
                 }
 
-                snapshot.CollectionPage?.Buffer.Release();
+                // release buffers in read-only snaphosts
+                foreach (var snapshot in _snapshots.Values.Where(x => x.Mode == LockMode.Read))
+                {
+                    foreach (var page in snapshot.LocalPages)
+                    {
+                        page.Buffer.Release();
+                    }
+
+                    snapshot.CollectionPage?.Buffer.Release();
+                }
             }
-#endif
+
+            _reader.Dispose();
+
+            _state = TransactionState.Disposed;
         }
     }
 }

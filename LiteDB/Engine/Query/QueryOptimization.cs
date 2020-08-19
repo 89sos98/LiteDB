@@ -12,15 +12,17 @@ namespace LiteDB.Engine
     {
         private readonly Snapshot _snapshot;
         private readonly Query _query;
+        private readonly Collation _collation;
         private readonly QueryPlan _queryPlan;
         private readonly List<BsonExpression> _terms = new List<BsonExpression>();
 
-        public QueryOptimization(Snapshot snapshot, Query query, IEnumerable<BsonDocument> source)
+        public QueryOptimization(Snapshot snapshot, Query query, IEnumerable<BsonDocument> source, Collation collation)
         {
             if (query.Select == null) throw new ArgumentNullException(nameof(query.Select));
 
             _snapshot = snapshot;
             _query = query;
+            _collation = collation;
 
             _queryPlan = new QueryPlan(snapshot.CollectionName)
             {
@@ -45,6 +47,9 @@ namespace LiteDB.Engine
         {
             // split where expressions into TERMs (splited by AND operator)
             this.SplitWherePredicateInTerms();
+
+            // do terms optimizations
+            this.OptimizeTerms();
 
             // define Fields
             this.DefineQueryFields();
@@ -89,9 +94,6 @@ namespace LiteDB.Engine
                     var left = predicate.Left;
                     var right = predicate.Right;
 
-                    predicate.Parameters.CopyTo(left.Parameters);
-                    predicate.Parameters.CopyTo(right.Parameters);
-
                     add(left);
                     add(right);
                 }
@@ -105,6 +107,28 @@ namespace LiteDB.Engine
             foreach(var predicate in _query.Where)
             {
                 add(predicate);
+            }
+        }
+
+        /// <summary>
+        /// Do some pre-defined optimization on terms to convert expensive filter in indexable filter
+        /// </summary>
+        private void OptimizeTerms()
+        {
+            // simple optimization
+            for (var i = 0; i < _terms.Count; i++)
+            {
+                var term = _terms[i];
+
+                // convert: { [Enum] ANY = [Path] } to { [Path] IN ARRAY([Enum]) }
+                // very used in LINQ expressions: `query.Where(x => ids.Contains(x.Id))`
+                if (term.Left?.IsScalar == false &&
+                    term.IsANY &&
+                    term.Type == BsonExpressionType.Equal &&
+                    term.Right?.Type == BsonExpressionType.Path)
+                {
+                    _terms[i] = BsonExpression.Create(term.Right.Source + " IN ARRAY(" + term.Left.Source + ")", term.Parameters);
+                }
             }
         }
 
@@ -186,16 +210,8 @@ namespace LiteDB.Engine
                 _queryPlan.IsIndexKeyOnly = true;
             }
 
-            if (selected != null && selected.IsAllOperator)
-            {
-                // if selected term use ALL operant, do not remove from filter because INDEX conver only ANY
-                _queryPlan.Filters.AddRange(_terms);
-            }
-            else
-            {
-                // fill filter using all expressions (remove selected term used in Index)
-                _queryPlan.Filters.AddRange(_terms.Where(x => x != selected));
-            }
+            // fill filter using all expressions (remove selected term used in Index)
+            _queryPlan.Filters.AddRange(_terms.Where(x => x != selected));
         }
 
         /// <summary>
@@ -221,19 +237,38 @@ namespace LiteDB.Engine
             {
                 ENSURE(expr.Left != null && expr.Right != null, "predicate expression must has left/right expressions");
 
+                Tuple<CollectionIndex, BsonExpression> index = null;
+
+                // check if expression is ANY
+                if (expr.Left.IsScalar == false && expr.Right.IsScalar == true)
+                {
+                    // ANY expression support only LEFT (Enum) -> RIGHT (Scalar)
+                    if (expr.IsANY)
+                    {
+                        index = indexes
+                            .Where(x => x.Expression == expr.Left.Source && expr.Right.IsValue)
+                            .Select(x => Tuple.Create(x, expr.Right))
+                            .FirstOrDefault();
+                    }
+                    // ALL are not supported in index
+                }
+                else
+                {
+                    index = indexes
+                        .Where(x => x.Expression == expr.Left.Source && expr.Right.IsValue)
+                        .Select(x => Tuple.Create(x, expr.Right))
+                        .Union(indexes
+                            .Where(x => x.Expression == expr.Right.Source && expr.Left.IsValue)
+                            .Select(x => Tuple.Create(x, expr.Left))
+                        ).FirstOrDefault();
+                }
+
                 // get index that match with expression left/right side 
-                var index = indexes
-                    .Where(x => x.Expression == expr.Left.Source && expr.Right.IsValue)
-                    .Select(x => Tuple.Create(x, expr.Right))
-                    .Union(indexes
-                        .Where(x => x.Expression == expr.Right.Source && expr.Left.IsValue)
-                        .Select(x => Tuple.Create(x, expr.Left))
-                    ).FirstOrDefault();
 
                 if (index == null) continue;
 
                 // calculate index score and store highest score
-                var current = new IndexCost(index.Item1, expr, index.Item2);
+                var current = new IndexCost(index.Item1, expr, index.Item2, _collation);
 
                 if (lowest == null || current.Cost < lowest.Cost)
                 {

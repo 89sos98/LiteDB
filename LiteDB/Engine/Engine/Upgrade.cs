@@ -13,7 +13,7 @@ namespace LiteDB.Engine
         /// Upgrade old version of LiteDB into new LiteDB file structure. Returns true if database was completed converted
         /// If database already in current version just return false
         /// </summary>
-        public static bool Upgrade(string filename, string password = null)
+        public static bool Upgrade(string filename, string password = null, Collation collation = null)
         {
             if (filename.IsNullOrWhiteSpace()) throw new ArgumentNullException(nameof(filename));
             if (!File.Exists(filename)) return false;
@@ -22,7 +22,7 @@ namespace LiteDB.Engine
             {
                 Filename = filename,
                 Password = password,
-                Checkpoint = 0
+                Collation = collation
             };
 
             var backup = FileHelper.GetSufixFile(filename, "-backup", true);
@@ -56,18 +56,21 @@ namespace LiteDB.Engine
                     throw new LiteException(0, "Invalid data file format to upgrade");
                 }
 
-                try
+                using (var engine = new LiteEngine(settings))
                 {
-                    using (var engine = new LiteEngine(settings))
-                    {
-                        engine.Rebuild(reader);
+                    // copy all database to new Log file with NO checkpoint during all rebuild
+                    engine.Pragma(Pragmas.CHECKPOINT, 0);
 
-                        engine.Checkpoint();
-                    }
-                }
-                finally
-                {
-                    reader.Dispose();
+                    engine.RebuildContent(reader);
+
+                    // after rebuild, copy log bytes into data file
+                    engine.Checkpoint();
+
+                    // re-enable auto-checkpoint pragma
+                    engine.Pragma(Pragmas.CHECKPOINT, 1000);
+
+                    // copy userVersion from old datafile
+                    engine.Pragma("USER_VERSION", (reader as FileReaderV7).UserVersion);
                 }
             }
 

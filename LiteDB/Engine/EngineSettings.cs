@@ -17,12 +17,12 @@ namespace LiteDB.Engine
     public class EngineSettings
     {
         /// <summary>
-        /// Get/Set custom stream to be used as datafile (can be MemoryStrem or TempStream). Do not use FileStream - to use physical file, use "filename" attribute (and keep DataStrem/WalStream null)
+        /// Get/Set custom stream to be used as datafile (can be MemoryStream or TempStream). Do not use FileStream - to use physical file, use "filename" attribute (and keep DataStream/WalStream null)
         /// </summary>
         public Stream DataStream { get; set; } = null;
 
         /// <summary>
-        /// Get/Set custom stream to be used as log file. If is null, use a new TempStream (for TempStrem datafile) or MemoryStream (for MemoryStream datafile)
+        /// Get/Set custom stream to be used as log file. If is null, use a new TempStream (for TempStream datafile) or MemoryStream (for MemoryStream datafile)
         /// </summary>
         public Stream LogStream { get; set; } = null;
 
@@ -42,47 +42,19 @@ namespace LiteDB.Engine
         public string Password { get; set; }
 
         /// <summary>
-        /// Timeout for waiting unlock operations (default: 1 minute)
-        /// </summary>
-        public TimeSpan Timeout { get; set; } = TimeSpan.FromMinutes(1);
-
-        /// <summary>
         /// If database is new, initialize with allocated space (in bytes) (default: 0)
         /// </summary>
         public long InitialSize { get; set; } = 0;
 
         /// <summary>
-        /// Max limit of datafile (in bytes) (default: MaxValue)
+        /// Create database with custom string collection (used only to create database) (default: Collation.Default)
         /// </summary>
-        public long LimitSize { get; set; } = long.MaxValue;
-
-        /// <summary>
-        /// Returns date in UTC timezone from BSON deserialization (default: false == LocalTime)
-        /// </summary>
-        public bool UtcDate { get; set; } = false;
+        public Collation Collation { get; set; }
 
         /// <summary>
         /// Indicate that engine will open files in readonly mode (and will not support any database change)
         /// </summary>
         public bool ReadOnly { get; set; } = false;
-
-        /// <summary>
-        /// When LOG file get are bigger than checkpoint size (in pages), do a soft checkpoint (and also do a checkpoint at shutdown)
-        /// Checkpoint = 0 means no auto-checkpoint and no shutdown checkpoint
-        /// </summary>
-        public int Checkpoint { get; set; } = 1000;
-
-        /// <summary>
-        /// Size, in PAGES, for each buffer array (used in MemoryStore) - Each byte array will be created with this size * PAGE_SIZE. 
-        /// Should be > 100 (800kb) - Default: 1000 (8Mb each segment)
-        /// </summary>
-        public int MemorySegmentSize { get; set; } = MEMORY_SEGMENT_SIZE;
-
-        /// <summary>
-        /// Define, in page size, how many pages each collection will keep in memory before flush to disk. When reach this size
-        /// all dirty pages will be saved on log files and clean pages will be removed from cache
-        /// </summary>
-        public int MaxTransactionSize { get; set; } = MAX_TRANSACTION_SIZE;
 
         /// <summary>
         /// Create new IStreamFactory for datafile
@@ -103,7 +75,7 @@ namespace LiteDB.Engine
             }
             else if (!string.IsNullOrEmpty(this.Filename))
             {
-                return new FileStreamFactory(this.Filename, this.Password, this.ReadOnly);
+                return new FileStreamFactory(this.Filename, this.Password, this.ReadOnly, false);
             }
 
             throw new ArgumentException("EngineSettings must have Filename or DataStream as data source");
@@ -130,7 +102,7 @@ namespace LiteDB.Engine
             {
                 var logName = FileHelper.GetLogFile(this.Filename);
 
-                return new FileStreamFactory(logName, this.Password, this.ReadOnly);
+                return new FileStreamFactory(logName, this.Password, this.ReadOnly, false);
             }
 
             return new StreamFactory(new MemoryStream(), this.Password);
@@ -139,7 +111,6 @@ namespace LiteDB.Engine
         /// <summary>
         /// Create new IStreamFactory for temporary file (sort)
         /// </summary>
-        /// <returns></returns>
         internal IStreamFactory CreateTempFactory()
         {
             if (this.TempStream != null)
@@ -158,7 +129,7 @@ namespace LiteDB.Engine
             {
                 var tempName = FileHelper.GetTempFile(this.Filename);
 
-                return new FileStreamFactory(tempName, this.Password, false);
+                return new FileStreamFactory(tempName, this.Password, false, true);
             }
 
             return new StreamFactory(new TempStream(), this.Password);

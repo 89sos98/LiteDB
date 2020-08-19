@@ -1,4 +1,5 @@
-﻿using System;
+﻿using LiteDB.Engine;
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
@@ -25,7 +26,7 @@ namespace LiteDB
             // if any sides are string, concat casting both to string
             else if (left.IsString || right.IsString)
             {
-                return left.ToString() + right.ToString();
+                return BsonExpressionMethods.STRING(left).AsString + BsonExpressionMethods.STRING(right).AsString;
             }
             // if any side are DateTime and another is number, add days in date
             else if (left.IsDateTime && right.IsNumber)
@@ -112,54 +113,54 @@ namespace LiteDB
         /// <summary>
         /// Test if left and right are same value. Returns true or false
         /// </summary>
-        public static BsonValue EQ(BsonValue left, BsonValue right) => left == right;
-        public static BsonValue EQ_ANY(IEnumerable<BsonValue> left, BsonValue right) => left.Any(x => x == right);
-        public static BsonValue EQ_ALL(IEnumerable<BsonValue> left, BsonValue right) => left.All(x => x == right);
+        public static BsonValue EQ(Collation collation, BsonValue left, BsonValue right) => collation.Equals(left, right);
+        public static BsonValue EQ_ALL(Collation collation, IEnumerable<BsonValue> left, BsonValue right) => left.All(x => collation.Equals(x, right));
+        public static BsonValue EQ_ANY(Collation collation, IEnumerable<BsonValue> left, BsonValue right) => left.Any(x => collation.Equals(x, right));
 
         /// <summary>
         /// Test if left is greater than right value. Returns true or false
         /// </summary>
         public static BsonValue GT(BsonValue left, BsonValue right) => left > right;
-        public static BsonValue GT_ANY(IEnumerable<BsonValue> left, BsonValue right) => left.Any(x => x > right);
-        public static BsonValue GT_ALL(IEnumerable<BsonValue> left, BsonValue right) => left.Any(x => x > right);
+        public static BsonValue GT_ANY(Collation collation, IEnumerable<BsonValue> left, BsonValue right) => left.Any(x => collation.Compare(x, right) > 0);
+        public static BsonValue GT_ALL(Collation collation, IEnumerable<BsonValue> left, BsonValue right) => left.All(x => collation.Compare(x, right) > 0);
 
         /// <summary>
         /// Test if left is greater or equals than right value. Returns true or false
         /// </summary>
         public static BsonValue GTE(BsonValue left, BsonValue right) => left >= right;
-        public static BsonValue GTE_ANY(IEnumerable<BsonValue> left, BsonValue right) => left.Any(x => x >= right);
-        public static BsonValue GTE_ALL(IEnumerable<BsonValue> left, BsonValue right) => left.Any(x => x >= right);
+        public static BsonValue GTE_ANY(Collation collation, IEnumerable<BsonValue> left, BsonValue right) => left.Any(x => collation.Compare(x, right) >= 0);
+        public static BsonValue GTE_ALL(Collation collation, IEnumerable<BsonValue> left, BsonValue right) => left.All(x => collation.Compare(x, right) >= 0);
 
 
         /// <summary>
         /// Test if left is less than right value. Returns true or false
         /// </summary>
         public static BsonValue LT(BsonValue left, BsonValue right) => left < right;
-        public static BsonValue LT_ANY(IEnumerable<BsonValue> left, BsonValue right) => left.Any(x => x < right);
-        public static BsonValue LT_ALL(IEnumerable<BsonValue> left, BsonValue right) => left.Any(x => x < right);
+        public static BsonValue LT_ANY(Collation collation, IEnumerable<BsonValue> left, BsonValue right) => left.Any(x => collation.Compare(x, right) < 0);
+        public static BsonValue LT_ALL(Collation collation, IEnumerable<BsonValue> left, BsonValue right) => left.All(x => collation.Compare(x, right) < 0);
 
         /// <summary>
         /// Test if left is less or equals than right value. Returns true or false
         /// </summary>
-        public static BsonValue LTE(BsonValue left, BsonValue right) => left <= right;
-        public static BsonValue LTE_ANY(IEnumerable<BsonValue> left, BsonValue right) => left.Any(x => x <= right);
-        public static BsonValue LTE_ALL(IEnumerable<BsonValue> left, BsonValue right) => left.Any(x => x <= right);
+        public static BsonValue LTE(Collation collation, BsonValue left, BsonValue right) => left <= right;
+        public static BsonValue LTE_ANY(Collation collation, IEnumerable<BsonValue> left, BsonValue right) => left.Any(x => collation.Compare(x, right) <= 0);
+        public static BsonValue LTE_ALL(Collation collation, IEnumerable<BsonValue> left, BsonValue right) => left.All(x => collation.Compare(x, right) <= 0);
 
         /// <summary>
         /// Test if left and right are not same value. Returns true or false
         /// </summary>
-        public static BsonValue NEQ(BsonValue left, BsonValue right) => left != right;
-        public static BsonValue NEQ_ANY(IEnumerable<BsonValue> left, BsonValue right) => left.Any(x => x != right);
-        public static BsonValue NEQ_ALL(IEnumerable<BsonValue> left, BsonValue right) => left.Any(x => x != right);
+        public static BsonValue NEQ(Collation collation, BsonValue left, BsonValue right) => !collation.Equals(left, right);
+        public static BsonValue NEQ_ANY(Collation collation, IEnumerable<BsonValue> left, BsonValue right) => left.Any(x => !collation.Equals(x, right));
+        public static BsonValue NEQ_ALL(Collation collation, IEnumerable<BsonValue> left, BsonValue right) => left.All(x => !collation.Equals(x, right));
 
         /// <summary>
         /// Test if left is "SQL LIKE" with right. Returns true or false. Works only when left and right are string
         /// </summary>
-        public static BsonValue LIKE(BsonValue left, BsonValue right)
+        public static BsonValue LIKE(Collation collation, BsonValue left, BsonValue right)
         {
             if (left.IsString && right.IsString)
             {
-                return left.AsString.SqlLike(right.AsString);
+                return left.AsString.SqlLike(right.AsString, collation);
             }
             else
             {
@@ -167,13 +168,13 @@ namespace LiteDB
             }
         }
 
-        public static BsonValue LIKE_ANY(IEnumerable<BsonValue> left, BsonValue right) => left.Any(x => LIKE(x, right));
-        public static BsonValue LIKE_ALL(IEnumerable<BsonValue> left, BsonValue right) => left.All(x => LIKE(x, right));
+        public static BsonValue LIKE_ANY(Collation collation, IEnumerable<BsonValue> left, BsonValue right) => left.Any(x => LIKE(collation, x, right));
+        public static BsonValue LIKE_ALL(Collation collation, IEnumerable<BsonValue> left, BsonValue right) => left.All(x => LIKE(collation, x, right));
 
         /// <summary>
         /// Test if left is between right-array. Returns true or false. Right value must be an array. Support multiple values
         /// </summary>
-        public static BsonValue BETWEEN(BsonValue left, BsonValue right)
+        public static BsonValue BETWEEN(Collation collation, BsonValue left, BsonValue right)
         {
             if (!right.IsArray) throw new InvalidOperationException("BETWEEN expression need an array with 2 values");
 
@@ -184,20 +185,21 @@ namespace LiteDB
             var start = arr[0];
             var end = arr[1];
 
-            return left >= start && left <= end;
+            //return left >= start && right <= end;
+            return collation.Compare(left, start) >= 0 && collation.Compare(left, end) <= 0;
         }
 
-        public static BsonValue BETWEEN_ANY(IEnumerable<BsonValue> left, BsonValue right) => left.Any(x => BETWEEN(x, right));
-        public static BsonValue BETWEEN_ALL(IEnumerable<BsonValue> left, BsonValue right) => left.All(x => BETWEEN(x, right));
+        public static BsonValue BETWEEN_ANY(Collation collation, IEnumerable<BsonValue> left, BsonValue right) => left.Any(x => BETWEEN(collation, x, right));
+        public static BsonValue BETWEEN_ALL(Collation collation, IEnumerable<BsonValue> left, BsonValue right) => left.All(x => BETWEEN(collation, x, right));
 
         /// <summary>
         /// Test if left are in any value in right side (when right side is an array). If right side is not an array, just implement a simple Equals (=). Returns true or false
         /// </summary>
-        public static BsonValue IN(BsonValue left, BsonValue right)
+        public static BsonValue IN(Collation collation, BsonValue left, BsonValue right)
         {
             if (right.IsArray)
             {
-                return right.AsArray.Contains(left);
+                return right.AsArray.Contains(left, collation);
             }
             else
             {
@@ -205,28 +207,8 @@ namespace LiteDB
             }
         }
 
-        public static BsonValue IN_ANY(IEnumerable<BsonValue> left, BsonValue right) => left.Any(x => IN(x, right));
-        public static BsonValue IN_ALL(IEnumerable<BsonValue> left, BsonValue right) => left.All(x => IN(x, right));
-
-        #endregion
-
-        #region Logic
-
-        /// <summary>
-        /// Test left AND right value. Returns true or false
-        /// </summary>
-        public static BsonValue AND(BsonValue left, BsonValue right)
-        {
-            return left && right;
-        }
-
-        /// <summary>
-        /// Test left OR right value. Returns true or false
-        /// </summary>
-        public static BsonValue OR(BsonValue left, BsonValue right)
-        {
-            return left || right;
-        }
+        public static BsonValue IN_ANY(Collation collation, IEnumerable<BsonValue> left, BsonValue right) => left.Any(x => IN(collation, x, right));
+        public static BsonValue IN_ALL(Collation collation, IEnumerable<BsonValue> left, BsonValue right) => left.All(x => IN(collation, x, right));
 
         #endregion
 
@@ -257,6 +239,13 @@ namespace LiteDB
         /// </summary>
         public static BsonValue MEMBER_PATH(BsonValue value, string name)
         {
+            // if value is null is because there is no "current document", only "all documents"
+            // SELECT COUNT(*), $.pageID FROM $page_list IS invalid!
+            if (value == null)
+            {
+                throw new LiteException(0, $"Field '{name}' is invalid in the select list because it is not contained in either an aggregate function or the GROUP BY clause.");
+            }
+
             if (string.IsNullOrEmpty(name))
             {
                 return value;
@@ -281,7 +270,7 @@ namespace LiteDB
         /// <summary>
         /// Returns a single value from array according index or expression parameter
         /// </summary>
-        public static BsonValue ARRAY_INDEX(BsonValue value, int index, BsonExpression expr, BsonDocument root, BsonDocument parameters)
+        public static BsonValue ARRAY_INDEX(BsonValue value, int index, BsonExpression expr, BsonDocument root, Collation collation, BsonDocument parameters)
         {
             if (!value.IsArray) return BsonValue.Null;
 
@@ -290,11 +279,8 @@ namespace LiteDB
             // for expr.Type = parameter, just get value as index (fixed position)
             if (expr.Type == BsonExpressionType.Parameter)
             {
-                // update parameters in expression
-                parameters.CopyTo(expr.Parameters);
-
                 // get fixed position based on parameter value (must return int value)
-                var indexValue = expr.ExecuteScalar(root);
+                var indexValue = expr.ExecuteScalar(root, collation);
 
                 if (!indexValue.IsNumber) throw new LiteException(0, "Parameter expression must return number when called inside an array");
 
@@ -314,7 +300,7 @@ namespace LiteDB
         /// <summary>
         /// Returns all values from array according filter expression or all values (index = MaxValue)
         /// </summary>
-        public static IEnumerable<BsonValue> ARRAY_FILTER(BsonValue value, int index, BsonExpression filterExpr, BsonDocument root, BsonDocument parameters)
+        public static IEnumerable<BsonValue> ARRAY_FILTER(BsonValue value, int index, BsonExpression filterExpr, BsonDocument root, Collation collation, BsonDocument parameters)
         {
             if (!value.IsArray) yield break;
 
@@ -331,13 +317,10 @@ namespace LiteDB
             // [<expr>] - index are an expression
             else
             {
-                // update parameters in expression
-                parameters.CopyTo(filterExpr.Parameters);
-
                 foreach (var item in arr)
                 {
                     // execute for each child value and except a first bool value (returns if true)
-                    var c = filterExpr.ExecuteScalar(new BsonDocument[] { root }, root, item);
+                    var c = filterExpr.ExecuteScalar(new BsonDocument[] { root }, root, item, collation);
 
                     if (c.IsBoolean && c.AsBoolean == true)
                     {
@@ -347,58 +330,7 @@ namespace LiteDB
             }
         }
 
-        #endregion
-
-        #region Map/Filter/Sort
-
-        public static IEnumerable<BsonValue> MAP(IEnumerable<BsonValue> input, BsonExpression mapExpr, BsonDocument root, BsonDocument parameters)
-        {
-            // update parameters in expression
-            parameters.CopyTo(mapExpr.Parameters);
-
-            foreach (var item in input)
-            {
-                // execute for each child value and except a first bool value (returns if true)
-                var values = mapExpr.Execute(new BsonDocument[] { root }, root, item);
-
-                foreach (var value in values)
-                {
-                    yield return value;
-                }
-            }
-        }
-
-        public static IEnumerable<BsonValue> FILTER(IEnumerable<BsonValue> input, BsonExpression filterExpr, BsonDocument root, BsonDocument parameters)
-        {
-            // update parameters in expression
-            parameters.CopyTo(filterExpr.Parameters);
-
-            foreach (var item in input)
-            {
-                // execute for each child value and except a first bool value (returns if true)
-                var c = filterExpr.ExecuteScalar(new BsonDocument[] { root }, root, item);
-
-                if (c.IsBoolean && c.AsBoolean == true)
-                {
-                    yield return item;
-                }
-            }
-        }
-
-        public static IEnumerable<BsonValue> SORT(IEnumerable<BsonValue> input, BsonExpression sortExpr, BsonDocument root, BsonDocument parameters)
-        {
-            //TODO: implement a sort function here
-
-            // update parameters in expression
-            parameters.CopyTo(sortExpr.Parameters);
-
-            foreach (var item in input)
-            {
-                yield return item;
-            }
-        }
-
-        #endregion
+        #endregion      
 
         #region Object Creation
 
@@ -408,6 +340,22 @@ namespace LiteDB
         public static BsonValue DOCUMENT_INIT(string[] keys, BsonValue[] values)
         {
             ENSURE(keys.Length == values.Length, "both keys/value must contains same length");
+
+            // test for special JsonEx data types (date, numberLong, ...)
+            if (keys.Length == 1 && keys[0][0] == '$' && values[0].IsString)
+            {
+                switch (keys[0])
+                {
+                    case "$binary": return BsonExpressionMethods.BINARY(values[0]);
+                    case "$oid": return BsonExpressionMethods.OBJECTID(values[0]);
+                    case "$guid": return BsonExpressionMethods.GUID(values[0]);
+                    case "$date": return BsonExpressionMethods.DATE(Collation.Binary, values[0]);
+                    case "$numberLong": return BsonExpressionMethods.LONG(values[0]);
+                    case "$numberDecimal": return BsonExpressionMethods.DECIMAL(Collation.Binary, values[0]);
+                    case "$minValue": return BsonExpressionMethods.MINVALUE();
+                    case "$maxValue": return BsonExpressionMethods.MAXVALUE();
+                }
+            }
 
             var doc = new BsonDocument();
 

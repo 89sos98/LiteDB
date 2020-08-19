@@ -1,4 +1,5 @@
-﻿using System;
+﻿using FluentAssertions;
+using System;
 using System.Collections.Generic;
 using Xunit;
 
@@ -18,7 +19,13 @@ namespace LiteDB.Tests.Expressions
                 return BsonExpression.Create(s).ExecuteScalar(doc);
             }
 
-            ;
+            // cover the fix of "copy/paste" errors
+            doc = new BsonDocument();
+            S("[1, 6] ALL > 5").ExpectValue(false);
+            S("[1, 6] ALL >= 5").ExpectValue(false);
+            S("[1, 6] ALL < 5").ExpectValue(false);
+            S("[1, 6] ALL <= 5").ExpectValue(false);
+            S("[1, 5] ALL != 5").ExpectValue(false);
 
             // direct path navigation
             doc = J("{ a: 1, b: null, c: true, d:[1,2], e:{d:4} }");
@@ -97,8 +104,6 @@ namespace LiteDB.Tests.Expressions
                 return BsonExpression.Create(s, args).ExecuteScalar(doc);
             }
 
-            ;
-
             // Operators order
             doc = J("{ a: 1, b: 2, c: 3 }");
 
@@ -165,9 +170,7 @@ namespace LiteDB.Tests.Expressions
             BsonValue S(string s, params BsonValue[] args)
             {
                 return BsonExpression.Create(s, args).ExecuteScalar(doc);
-            }
-
-            ;
+            };
 
             doc = J("{}");
 
@@ -243,8 +246,6 @@ namespace LiteDB.Tests.Expressions
                 return BsonExpression.Create(s, args).ExecuteScalar(doc);
             }
 
-            ;
-
             doc = J("{ arr: [1, 2, 3, 4, 5 ] }");
 
             P("@0", 10).ExpectValue(10);
@@ -260,6 +261,20 @@ namespace LiteDB.Tests.Expressions
             // using map
             P("ARRAY(MAP(ITEMS(@0) => (@ + @1)))", new BsonArray(new BsonValue[] {10, 11, 12}), 5)
                 .ExpectArray(15, 16, 17);
+
+            // sort ascending
+            P("ARRAY(SORT(ITEMS(@0) => @, @1))", new BsonArray(new BsonValue[] { 30, 20, 50 }), 1)
+                .ExpectArray(20, 30, 50);
+
+            P("ARRAY(SORT(ITEMS(@0) => @, @1))", new BsonArray(new BsonValue[] { 30, 20, 50 }), "asc")
+                .ExpectArray(20, 30, 50);
+
+            // sort descending
+            P("ARRAY(SORT(ITEMS(@0) => @, @1))", new BsonArray(new BsonValue[] { 30, 20, 50 }), -1)
+                .ExpectArray(50, 30, 20);
+
+            P("ARRAY(SORT(ITEMS(@0) => @, @1))", new BsonArray(new BsonValue[] { 30, 20, 50 }), "desc")
+                .ExpectArray(50, 30, 20);
         }
 
         [Fact]
@@ -270,9 +285,7 @@ namespace LiteDB.Tests.Expressions
             IEnumerable<BsonValue> A(string s, params BsonValue[] args)
             {
                 return BsonExpression.Create(s, args).Execute(docs);
-            }
-
-            ;
+            };
 
             docs = new List<BsonDocument>()
             {
@@ -291,7 +304,7 @@ namespace LiteDB.Tests.Expressions
             A("JOIN(*.c, '#')").ExpectValues("First#Second#Last");
 
             // when use $ over multiple values, only first result are used
-            A("JOIN(MAP($.arr[*] => (@ + 1)), '-')").ExpectValues("2-3");
+            A("JOIN(MAP(*.arr[*] => (@ + 1)), '-')").ExpectValues("2-3-2-4-6-10-2-6-6");
 
             // flaten
             A("*.arr[*]").ExpectValues(1, 2, 1, 3, 5, 9, 1, 5, 5);
@@ -313,6 +326,68 @@ namespace LiteDB.Tests.Expressions
             A("EXCEPT([1,2,3],1)").ExpectValues(2, 3);
             A("EXCEPT([1,2,3],[1,3])").ExpectValues(2);
             A("EXCEPT([1,2,3],[4,5])").ExpectValues(1, 2, 3);
+        }
+
+        [Fact]
+        public void Expression_Multiple_And_Tests()
+        {
+            BsonValue B(params BsonExpression[] args)
+            {
+                return Query.And(args).ExecuteScalar();
+            };
+
+            B("5 > 3", "10 != 'a'", "1 = 1").ExpectValue(true);
+            B("5 < 3", "10 != 'a'", "1 = 1").ExpectValue(false);
+            B("5 > 3", "10 = 'a'", "1 = 1").ExpectValue(false);
+            B("5 > 3", "10 != 'a'", "1 != 1").ExpectValue(false);
+        }
+
+        [Fact]
+        public void Expression_Multiple_Or_Tests()
+        {
+            BsonValue B(params BsonExpression[] args)
+            {
+                return Query.Or(args).ExecuteScalar();
+            };
+
+            B("5 > 3", "10 != 'a'", "1 = 1").ExpectValue(true);
+            B("5 < 3", "10 != 'a'", "1 = 1").ExpectValue(true);
+            B("5 > 3", "10 = 'a'", "1 = 1").ExpectValue(true);
+            B("5 < 3", "10 = 'a'", "1 != 1").ExpectValue(false);
+        }
+
+        [Fact]
+        public void Expression_AndAlso_OrElse()
+        {
+            var ex1 = BsonExpression.Create("LENGTH($.x) >= 5 AND SUBSTRING($.x, 0, 5) = \"12345\"");
+            var doc1 = new BsonDocument();
+
+            // OK (true)
+            doc1["x"] = "12345";
+            ex1.ExecuteScalar(doc1);
+
+            // KO (expected: false, actual: exception)
+            doc1["x"] = "123";
+            ex1.ExecuteScalar(doc1);
+        }
+
+        [Fact]
+        public void Expression_Conditional_IIF()
+        {
+            var ex1 = BsonExpression.Create("IIF(LENGTH($.x) >= 5, SUBSTRING($.x, 0, 5), \"too-short\")");
+            var doc1 = new BsonDocument();
+
+            // OK ("12345")
+            doc1["x"] = "123456789";
+            var r1 = ex1.ExecuteScalar(doc1);
+
+            r1.AsString.Should().Be("12345");
+
+            // KO (expected: "too-short", actual: System.ArgumentOutOfRangeException: Index and length must refer to a location within the string.)
+            doc1["x"] = "123";
+            var r2 = ex1.ExecuteScalar(doc1);
+
+            r2.AsString.Should().Be("too-short");
         }
     }
 }

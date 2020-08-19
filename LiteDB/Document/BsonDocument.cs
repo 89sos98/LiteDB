@@ -38,7 +38,7 @@ namespace LiteDB
             }
         }
 
-        internal new Dictionary<string, BsonValue> RawValue => base.RawValue as Dictionary<string, BsonValue>;
+        public new IDictionary<string, BsonValue> RawValue => base.RawValue as IDictionary<string, BsonValue>;
 
         /// <summary>
         /// Get/Set position of this document inside database. It's filled when used in Find operation.
@@ -60,7 +60,7 @@ namespace LiteDB
             }
         }
 
-        #region CompareTo / ToString
+        #region CompareTo
 
         public override int CompareTo(BsonValue other)
         {
@@ -88,11 +88,6 @@ namespace LiteDB
             if (i == thisLength) return i == otherLength ? 0 : -1;
 
             return 1;
-        }
-
-        public override string ToString()
-        {
-            return JsonSerializer.Serialize(this);
         }
 
         #endregion

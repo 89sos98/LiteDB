@@ -15,6 +15,7 @@ namespace LiteDB.Engine
 {
     internal class SortContainer : IDisposable
     {
+        private readonly Collation _collation;
         private readonly int _size;
 
         private int _remaining = 0;
@@ -45,15 +46,16 @@ namespace LiteDB.Engine
         /// </summary>
         public int Count => _count;
 
-        public SortContainer(int size)
+        public SortContainer(Collation collation, int size)
         {
+            _collation = collation;
             _size = size;
         }
 
         public void Insert(IEnumerable<KeyValuePair<BsonValue, PageAddress>> items, int order, BufferSlice buffer)
         {
             var query = order == Query.Ascending ?
-                items.OrderBy(x => x.Key) : items.OrderByDescending(x => x.Key);
+                items.OrderBy(x => x.Key, _collation) : items.OrderByDescending(x => x.Key, _collation);
 
             var offset = 0;
 
@@ -61,7 +63,11 @@ namespace LiteDB.Engine
             {
                 buffer.WriteIndexKey(item.Key, offset);
 
-                offset += GetKeyLength(item.Key);
+                var keyLength = IndexNode.GetKeyLength(item.Key, false);
+
+                if (keyLength > MAX_INDEX_KEY_LENGTH) throw LiteException.InvalidIndexKey($"Sort key must be less than {MAX_INDEX_KEY_LENGTH} bytes.");
+
+                offset += keyLength;
 
                 buffer.Write(item.Value, offset);
 
@@ -128,13 +134,6 @@ namespace LiteDB.Engine
             }
 
             BufferPool.Return(bytes);
-        }
-
-        public static int GetKeyLength(BsonValue key)
-        {
-            return 1 + // DataType
-                key.GetBytesCount(false) + // BsonValue
-                (key.IsString || key.IsBinary ? 1 : 0); // Key Length
         }
 
         public void Dispose()

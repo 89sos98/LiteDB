@@ -14,9 +14,16 @@ namespace LiteDB
     {
         public static IEnumerable<BsonValue> ToEnumerable(this IBsonDataReader reader)
         {
-            while (reader.Read())
+            try
             {
-                yield return reader.Current;
+                while (reader.Read())
+                {
+                    yield return reader.Current;
+                }
+            }
+            finally
+            {
+                reader.Dispose();
             }
         }
 
@@ -31,6 +38,5 @@ namespace LiteDB
         public static BsonValue Single(this IBsonDataReader reader) => ToEnumerable(reader).Single();
 
         public static BsonValue SingleOrDefault(this IBsonDataReader reader) => ToEnumerable(reader).SingleOrDefault();
-
     }
 }

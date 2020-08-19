@@ -18,10 +18,12 @@ namespace LiteDB.Engine
             return this.AutoTransaction(transaction =>
             {
                 var snapshot = transaction.CreateSnapshot(LockMode.Write, collection, false);
-                var col = snapshot.CollectionPage;
-                var indexer = new IndexService(snapshot);
+                var collectionPage = snapshot.CollectionPage;
+                var indexer = new IndexService(snapshot, _header.Pragmas.Collation);
                 var data = new DataService(snapshot);
                 var count = 0;
+
+                if (collectionPage == null) return 0;
 
                 LOG($"update `{collection}`", "COMMAND");
 
@@ -29,7 +31,7 @@ namespace LiteDB.Engine
                 {
                     transaction.Safepoint();
 
-                    if (this.UpdateDocument(snapshot, col, doc, indexer, data))
+                    if (this.UpdateDocument(snapshot, collectionPage, doc, indexer, data))
                     {
                         count++;
                     }
@@ -47,47 +49,44 @@ namespace LiteDB.Engine
             if (collection.IsNullOrWhiteSpace()) throw new ArgumentNullException(nameof(collection));
             if (transform == null) throw new ArgumentNullException(nameof(transform));
 
-            return this.AutoTransaction((Func<TransactionService, int>)(transaction =>
+            return this.Update(collection, transformDocs());
+
+            IEnumerable<BsonDocument> transformDocs()
             {
-                return this.Update(collection, transformDocs());
+                var q = new Query { Select = "$", ForUpdate = true };
 
-                IEnumerable<BsonDocument> transformDocs()
+                if (predicate != null)
                 {
-                    var q = new Query { Select = "$", ForUpdate = true };
+                    q.Where.Add(predicate);
+                }
 
-                    if (predicate != null)
+                using (var reader = this.Query(collection, q))
+                {
+                    while (reader.Read())
                     {
-                        q.Where.Add(predicate);
-                    }
+                        var doc = reader.Current.AsDocument;
 
-                    using (var reader = this.Query(collection, q))
-                    {
-                        while(reader.Read())
+                        var id = doc["_id"];
+                        var value = transform.ExecuteScalar(doc, _header.Pragmas.Collation);
+
+                        if (!value.IsDocument) throw new ArgumentException("Extend expression must return a document", nameof(transform));
+
+                        var result = BsonExpressionMethods.EXTEND(doc, value.AsDocument).AsDocument;
+
+                        // be sure result document will contain same _id as current doc
+                        if (result.TryGetValue("_id", out var newId))
                         {
-                            var doc = reader.Current.AsDocument;
-
-                            var id = doc["_id"];
-                            var value = transform.ExecuteScalar(doc);
-
-                            if (!value.IsDocument) throw new ArgumentException("Extend expression must return a document", nameof(transform));
-
-                            var result = value.AsDocument;
-
-                            // be sure result document will contain same _id as current doc
-                            if (result.TryGetValue("_id", out var newId))
-                            {
-                                if (newId != id) throw LiteException.InvalidUpdateField("_id");
-                            }
-                            else
-                            {
-                                result["_id"] = id;
-                            }
-
-                            yield return result;
+                            if (newId != id) throw LiteException.InvalidUpdateField("_id");
                         }
+                        else
+                        {
+                            result["_id"] = id;
+                        }
+
+                        yield return result;
                     }
                 }
-            }));
+            }
         }
 
         /// <summary>
@@ -123,14 +122,16 @@ namespace LiteDB.Engine
 
             foreach (var index in col.GetCollectionIndexes().Where(x => x.Name != "_id"))
             {
-                // getting all keys do check
-                var keys = index.BsonExpr.Execute(doc);
+                // getting all keys from expression over document
+                var keys = index.BsonExpr.GetIndexKeys(doc, _header.Pragmas.Collation);
 
                 foreach (var key in keys)
                 {
                     newKeys.Add(new Tuple<byte, BsonValue, string>(index.Slot, key, index.Name));
                 }
             }
+
+            if (oldKeys.Length == 0 && newKeys.Count == 0) return true;
 
             // get a list of all nodes that are in oldKeys but not in newKeys (must delete)
             var toDelete = new HashSet<PageAddress>(oldKeys
@@ -141,6 +142,9 @@ namespace LiteDB.Engine
             var toInsert = newKeys
                 .Where(x => oldKeys.Any(o => o.Item1 == x.Item1 && o.Item2 == x.Item2) == false)
                 .ToArray();
+
+            // if nothing to change, just exit
+            if (toDelete.Count == 0 && toInsert.Length == 0) return true;
 
             // delete nodes and return last keeped node in list
             var last = indexer.DeleteList(pkNode.Position, toDelete);

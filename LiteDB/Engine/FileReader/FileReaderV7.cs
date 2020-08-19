@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using static LiteDB.Constants;
@@ -22,16 +23,12 @@ namespace LiteDB.Engine
 
         private byte[] _buffer = new byte[V7_PAGE_SIZE];
 
-        public int UserVersion { get; set; }
-
         public FileReaderV7(Stream stream, string password)
         {
             _stream = stream;
 
             // only userVersion was avaiable in old file format versions
             _header = this.ReadPage(0);
-
-            this.UserVersion = _header["userVersion"].AsInt32;
 
             if (password == null && _header["salt"].AsBinary.IsFullZero() == false)
             {
@@ -78,7 +75,7 @@ namespace LiteDB.Engine
                 yield return new IndexInfo
                 {
                     Collection = collection,
-                    Name = index["name"].AsString,
+                    Name = Regex.Replace(index["name"].AsString, @"[^a-z0-9]", "", RegexOptions.IgnoreCase | RegexOptions.Compiled),
                     Expression = index["expression"].AsString,
                     Unique = index["unique"].AsBoolean
                 };
@@ -112,7 +109,7 @@ namespace LiteDB.Engine
 
                         if (dataPage["pageType"].AsInt32 != 4) continue;
 
-                        var block = dataPage["blocks"].AsArray.FirstOrDefault(x => x["index"] == dataBlock["index"]).AsDocument;
+                        var block = dataPage["blocks"].AsArray.FirstOrDefault(x => x["index"] == dataBlock["index"])?.AsDocument;
 
                         if (block == null) continue;
 
@@ -341,6 +338,8 @@ namespace LiteDB.Engine
             return page;
         }
 
+        public int UserVersion => (int)_header["userVersion"];
+
         /// <summary>
         /// Read extend data block
         /// </summary>
@@ -395,10 +394,6 @@ namespace LiteDB.Engine
             }
 
             return visited;
-        }
-
-        public void Dispose()
-        {
         }
     }
 }

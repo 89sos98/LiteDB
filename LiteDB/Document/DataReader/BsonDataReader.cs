@@ -103,18 +103,6 @@ namespace LiteDB
             }
         }
 
-        protected virtual void Dispose(bool disposing)
-        {
-            if (_disposed) return;
-
-            //if (disposing)
-            {
-                _source?.Dispose();
-            }
-
-            _disposed = true;
-        }
-
         public void Dispose()
         {
             this.Dispose(true);
@@ -124,6 +112,18 @@ namespace LiteDB
         ~BsonDataReader()
         {
             this.Dispose(false);
+        }
+
+        protected virtual void Dispose(bool disposing)
+        {
+            if (_disposed) return;
+
+            _disposed = true;
+
+            if (disposing)
+            {
+                _source?.Dispose();
+            }
         }
     }
 }

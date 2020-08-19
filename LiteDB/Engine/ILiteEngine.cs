@@ -5,9 +5,8 @@ namespace LiteDB.Engine
 {
     public interface ILiteEngine : IDisposable
     {
-        int Analyze(string[] collections);
-        void Checkpoint();
-        long Shrink();
+        int Checkpoint();
+        long Rebuild(RebuildOptions options);
 
         bool BeginTrans();
         bool Commit();
@@ -17,7 +16,7 @@ namespace LiteDB.Engine
 
         int Insert(string collection, IEnumerable<BsonDocument> docs, BsonAutoId autoId);
         int Update(string collection, IEnumerable<BsonDocument> docs);
-        int UpdateMany(string collection, BsonExpression extend, BsonExpression predicate);
+        int UpdateMany(string collection, BsonExpression transform, BsonExpression predicate);
         int Upsert(string collection, IEnumerable<BsonDocument> docs, BsonAutoId autoId);
         int Delete(string collection, IEnumerable<BsonValue> ids);
         int DeleteMany(string collection, BsonExpression predicate);
@@ -27,5 +26,8 @@ namespace LiteDB.Engine
 
         bool EnsureIndex(string collection, string name, BsonExpression expression, bool unique);
         bool DropIndex(string collection, string name);
+
+        BsonValue Pragma(string name);
+        bool Pragma(string name, BsonValue value);
     }
 }

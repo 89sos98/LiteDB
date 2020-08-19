@@ -10,7 +10,7 @@ namespace LiteDB
         #region Count
 
         /// <summary>
-        /// Get document count using property on collection.
+        /// Get document count in collection
         /// </summary>
         public int Count()
         {
@@ -19,7 +19,7 @@ namespace LiteDB
         }
 
         /// <summary>
-        /// Count documents matching a query. This method does not deserialize any document. Needs indexes on query expression
+        /// Get document count in collection using predicate filter expression
         /// </summary>
         public int Count(BsonExpression predicate)
         {
@@ -29,12 +29,12 @@ namespace LiteDB
         }
 
         /// <summary>
-        /// Count documents matching a query. This method does not deserialize any document. Needs indexes on query expression
+        /// Get document count in collection using predicate filter expression
         /// </summary>
         public int Count(string predicate, BsonDocument parameters) => this.Count(BsonExpression.Create(predicate, parameters));
 
         /// <summary>
-        /// Count documents matching a query. This method does not deserialize any document. Needs indexes on query expression
+        /// Get document count in collection using predicate filter expression
         /// </summary>
         public int Count(string predicate, params BsonValue[] args) => this.Count(BsonExpression.Create(predicate, args));
 
@@ -44,16 +44,16 @@ namespace LiteDB
         public int Count(Expression<Func<T, bool>> predicate) => this.Count(_mapper.GetExpression(predicate));
 
         /// <summary>
-        /// Count documents matching a query. This method does not deserialize any documents. Needs indexes on query expression
+        /// Get document count in collection using predicate filter expression
         /// </summary>
-        public int Count(Query query) => new LiteQueryable<T>(_engine.Value, _mapper, _collection, query).Count();
+        public int Count(Query query) => new LiteQueryable<T>(_engine, _mapper, _collection, query).Count();
 
         #endregion
 
         #region LongCount
 
         /// <summary>
-        /// Get document count using property on collection.
+        /// Get document count in collection
         /// </summary>
         public long LongCount()
         {
@@ -61,7 +61,7 @@ namespace LiteDB
         }
 
         /// <summary>
-        /// Count documents matching a query. This method does not deserialize any documents. Needs indexes on query expression
+        /// Get document count in collection using predicate filter expression
         /// </summary>
         public long LongCount(BsonExpression predicate)
         {
@@ -71,31 +71,31 @@ namespace LiteDB
         }
 
         /// <summary>
-        /// Count documents matching a query. This method does not deserialize any documents. Needs indexes on query expression
+        /// Get document count in collection using predicate filter expression
         /// </summary>
         public long LongCount(string predicate, BsonDocument parameters) => this.LongCount(BsonExpression.Create(predicate, parameters));
 
         /// <summary>
-        /// Count documents matching a query. This method does not deserialize any documents. Needs indexes on query expression
+        /// Get document count in collection using predicate filter expression
         /// </summary>
         public long LongCount(string predicate, params BsonValue[] args) => this.LongCount(BsonExpression.Create(predicate, args));
 
         /// <summary>
-        /// Count documents matching a query. This method does not deserialize any documents. Needs indexes on query expression
+        /// Get document count in collection using predicate filter expression
         /// </summary>
         public long LongCount(Expression<Func<T, bool>> predicate) => this.LongCount(_mapper.GetExpression(predicate));
 
         /// <summary>
-        /// Count documents matching a query. This method does not deserialize any documents. Needs indexes on query expression
+        /// Get document count in collection using predicate filter expression
         /// </summary>
-        public long LongCount(Query query) => new LiteQueryable<T>(_engine.Value, _mapper, _collection, query).Count();
+        public long LongCount(Query query) => new LiteQueryable<T>(_engine, _mapper, _collection, query).Count();
 
         #endregion
 
         #region Exists
 
         /// <summary>
-        /// Returns true if query returns any document. This method does not deserialize any document. Needs indexes on query expression
+        /// Get true if collection contains at least 1 document that satisfies the predicate expression
         /// </summary>
         public bool Exists(BsonExpression predicate)
         {
@@ -105,24 +105,24 @@ namespace LiteDB
         }
 
         /// <summary>
-        /// Returns true if query returns any document. This method does not deserialize any document. Needs indexes on query expression
+        /// Get true if collection contains at least 1 document that satisfies the predicate expression
         /// </summary>
         public bool Exists(string predicate, BsonDocument parameters) => this.Exists(BsonExpression.Create(predicate, parameters));
 
         /// <summary>
-        /// Returns true if query returns any document. This method does not deserialize any document. Needs indexes on query expression
+        /// Get true if collection contains at least 1 document that satisfies the predicate expression
         /// </summary>
         public bool Exists(string predicate, params BsonValue[] args) => this.Exists(BsonExpression.Create(predicate, args));
 
         /// <summary>
-        /// Returns true if query returns any document. This method does not deserialize any document. Needs indexes on query expression
+        /// Get true if collection contains at least 1 document that satisfies the predicate expression
         /// </summary>
         public bool Exists(Expression<Func<T, bool>> predicate) => this.Exists(_mapper.GetExpression(predicate));
 
         /// <summary>
-        /// Returns true if query returns any document. This method does not deserialize any document. Needs indexes on query expression
+        /// Get true if collection contains at least 1 document that satisfies the predicate expression
         /// </summary>
-        public bool Exists(Query query) => new LiteQueryable<T>(_engine.Value, _mapper, _collection, query).Exists();
+        public bool Exists(Query query) => new LiteQueryable<T>(_engine, _mapper, _collection, query).Exists();
 
         #endregion
 

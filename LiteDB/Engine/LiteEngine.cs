@@ -62,18 +62,12 @@ namespace LiteDB.Engine
         {
             _settings = settings ?? throw new ArgumentNullException(nameof(settings));
 
-            // clear checkpoint if database is readonly
-            if (_settings.ReadOnly) _settings.Checkpoint = 0;
-
             LOG($"start initializing{(_settings.ReadOnly ? " (readonly)" : "")}", "ENGINE");
 
             try
             {
-                // initialize locker service (no dependency)
-                _locker = new LockService(settings.Timeout, settings.ReadOnly);
-
                 // initialize disk service (will create database if needed)
-                _disk = new DiskService(settings);
+                _disk = new DiskService(settings, MEMORY_SEGMENT_SIZES);
 
                 // read page with no cache ref (has a own PageBuffer) - do not Release() support
                 var buffer = _disk.ReadFull(FileOrigin.Data).First();
@@ -82,6 +76,15 @@ namespace LiteDB.Engine
                 if (buffer[0] == 1) throw new LiteException(0, "This data file is encrypted and needs a password to open");
 
                 _header = new HeaderPage(buffer);
+                
+                // test for same collation
+                if (settings.Collation != null && settings.Collation.ToString() != _header.Pragmas.Collation.ToString())
+                {
+                    throw new LiteException(0, $"Datafile collation '{_header.Pragmas.Collation}' is different from engine settings. Use Rebuild database to change collation.");
+                }
+
+                // initialize locker service
+                _locker = new LockService(_header.Pragmas);
 
                 // initialize wal-index service
                 _walIndex = new WalIndexService(_disk, _locker);
@@ -93,10 +96,10 @@ namespace LiteDB.Engine
                 }
 
                 // initialize sort temp disk
-                _sortDisk = new SortDisk(settings.CreateTempFactory(), CONTAINER_SORT_SIZE, settings.UtcDate);
+                _sortDisk = new SortDisk(settings.CreateTempFactory(), CONTAINER_SORT_SIZE, _header.Pragmas);
 
                 // initialize transaction monitor as last service
-                _monitor = new TransactionMonitor(_header, _locker, _disk, _walIndex, _settings);
+                _monitor = new TransactionMonitor(_header, _locker, _disk, _walIndex);
 
                 // register system collections
                 this.InitializeSystemCollections();
@@ -123,7 +126,19 @@ namespace LiteDB.Engine
         /// <summary>
         /// Run checkpoint command to copy log file into data file
         /// </summary>
-        public void Checkpoint() => _walIndex.Checkpoint(false);
+        public int Checkpoint() => _walIndex.Checkpoint();
+
+        public void Dispose()
+        {
+            // dispose data file
+            this.Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+
+        ~LiteEngine()
+        {
+            this.Dispose(false);
+        }
 
         /// <summary>
         /// Shutdown process:
@@ -144,7 +159,7 @@ namespace LiteDB.Engine
                 _monitor?.Dispose();
 
                 // do a soft checkpoint (only if exclusive lock is possible)
-                if (_settings.Checkpoint > 0) _walIndex?.Checkpoint(true);
+                if (_header?.Pragmas.Checkpoint > 0) _walIndex?.TryCheckpoint();
 
                 // close all disk streams (and delete log if empty)
                 _disk?.Dispose();
@@ -156,22 +171,10 @@ namespace LiteDB.Engine
                 _locker?.Dispose();
             }
 
+            LOG("engine disposed", "ENGINE");
+
             _disposed = true;
         }
 
-        public void Dispose()
-        {
-            // dispose data file
-            this.Dispose(true);
-
-            GC.SuppressFinalize(this);
-
-            LOG("engine disposed", "ENGINE");
-        }
-
-        ~LiteEngine()
-        {
-            this.Dispose(false);
-        }
     }
 }
