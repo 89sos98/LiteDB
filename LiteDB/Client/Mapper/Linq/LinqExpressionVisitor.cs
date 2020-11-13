@@ -101,6 +101,19 @@ namespace LiteDB
         }
 
         /// <summary>
+        /// Visit lambda invocation
+        /// </summary>
+        protected override Expression VisitInvocation(InvocationExpression node)
+        {
+            var l = base.VisitInvocation(node);
+
+            // remove last parameter $ (or @)
+            _builder.Length--;
+
+            return l;
+        }
+
+        /// <summary>
         /// Visit :: x => `x`.Customer.Name
         /// </summary>
         protected override Expression VisitParameter(ParameterExpression node)
@@ -659,7 +672,7 @@ namespace LiteDB
         {
             // apppend `= true` only if expression is path (MemberAccess), method call or constant
             ensurePredicate = ensurePredicate &&
-                (expr.NodeType == ExpressionType.MemberAccess || expr.NodeType == ExpressionType.Call || expr.NodeType == ExpressionType.Constant);
+                (expr.NodeType == ExpressionType.MemberAccess || expr.NodeType == ExpressionType.Call || expr.NodeType == ExpressionType.Invoke || expr.NodeType == ExpressionType.Constant);
 
             if (ensurePredicate)
             {

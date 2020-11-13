@@ -368,9 +368,9 @@ namespace LiteDB
             var ctors = mapper.ForType.GetConstructors();
 
             var ctor =
-                ctors.FirstOrDefault(x => x.GetCustomAttribute<BsonCtorAttribute>() != null && x.GetParameters().All(p => Reflection.ConvertType.ContainsKey(p.ParameterType))) ??
+                ctors.FirstOrDefault(x => x.GetCustomAttribute<BsonCtorAttribute>() != null && x.GetParameters().All(p => Reflection.ConvertType.ContainsKey(p.ParameterType) || _basicTypes.Contains(p.ParameterType) || p.ParameterType.GetTypeInfo().IsEnum)) ??
                 ctors.FirstOrDefault(x => x.GetParameters().Length == 0) ??
-                ctors.FirstOrDefault(x => x.GetParameters().All(p => Reflection.ConvertType.ContainsKey(p.ParameterType) || _customDeserializer.ContainsKey(p.ParameterType)));
+                ctors.FirstOrDefault(x => x.GetParameters().All(p => Reflection.ConvertType.ContainsKey(p.ParameterType) || _customDeserializer.ContainsKey(p.ParameterType) || _basicTypes.Contains(p.ParameterType) || p.ParameterType.GetTypeInfo().IsEnum));
 
             if (ctor == null) return null;
 
@@ -393,6 +393,30 @@ namespace LiteDB
                     var deserializer = Expression.Constant(func);
                     var call = Expression.Invoke(deserializer, expr);
                     var cast = Expression.Convert(call, p.ParameterType);
+                    pars.Add(cast);
+                }
+                else if (_basicTypes.Contains(p.ParameterType))
+                {
+                    var typeExpr = Expression.Constant(p.ParameterType);
+                    var rawValue = Expression.Property(expr, typeof(BsonValue).GetProperty("RawValue"));
+                    var convertTypeFunc = Expression.Call(typeof(Convert).GetMethod("ChangeType", new Type[] { typeof(object), typeof(Type) }), rawValue, typeExpr);
+                    var cast = Expression.Convert(convertTypeFunc, p.ParameterType);
+                    pars.Add(cast);
+                }
+                else if (p.ParameterType.GetTypeInfo().IsEnum && this.EnumAsInteger)
+                {
+                    var typeExpr = Expression.Constant(p.ParameterType);
+                    var rawValue = Expression.PropertyOrField(expr, "AsInt32");
+                    var convertTypeFunc = Expression.Call(typeof(Enum).GetMethod("ToObject", new Type[] { typeof(Type), typeof(Int32) }), typeExpr, rawValue);
+                    var cast = Expression.Convert(convertTypeFunc, p.ParameterType);
+                    pars.Add(cast);
+                }
+                else if (p.ParameterType.GetTypeInfo().IsEnum)
+                {
+                    var typeExpr = Expression.Constant(p.ParameterType);
+                    var rawValue = Expression.PropertyOrField(expr, "AsString");
+                    var convertTypeFunc = Expression.Call(typeof(Enum).GetMethod("Parse", new Type[] { typeof(Type), typeof(string) }), typeExpr, rawValue);
+                    var cast = Expression.Convert(convertTypeFunc, p.ParameterType);
                     pars.Add(cast);
                 }
                 else
@@ -484,8 +508,13 @@ namespace LiteDB
                 if (included)
                 {
                     doc["_id"] = idRef;
+                    if (doc.ContainsKey("$type"))
+                    {
+                        doc["_type"] = bson["$type"];
+                    }
 
                     return m.Deserialize(entity.ForType, doc);
+                    
                 }
                 else
                 {
@@ -564,6 +593,10 @@ namespace LiteDB
                     if (included)
                     {
                         item["_id"] = idRef;
+                        if (item.AsDocument.ContainsKey("$type"))
+                        {
+                            item["_type"] = item["$type"];
+                        }
 
                         result.Add(item);
                     }
